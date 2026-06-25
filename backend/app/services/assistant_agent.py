@@ -185,6 +185,11 @@ async def run(
             text, data = await mcp_client.call_external_tool(name, args)
         else:  # native tool — flat args, run off the event loop
             args = {k: v for k, v in spec.items() if k not in ("name", "arguments")}
+            # Gemma (and other models) often nest a native tool's args under the generic
+            # `arguments` object the schema also offers for MCP tools; fold those in so a
+            # by-name fetch (symbol/factor/universe) isn't silently dropped. Flat keys win.
+            if isinstance(spec.get("arguments"), dict):
+                args = {**spec["arguments"], **args}
             text, data = await asyncio.to_thread(tools.run_tool, name, ctx, args)
         observations.append(text)
         yield {"type": "tool", "name": name, "args": {k: v for k, v in args.items() if v is not None},
