@@ -25,6 +25,9 @@ backend/dist_desktop/
 backend/build_desktop/
 packaging/dist_installer/
 
+# Icon-design iteration / preview images (not shipped)
+packaging/preview/
+
 # Editor / OS
 .vscode/
 .idea/
