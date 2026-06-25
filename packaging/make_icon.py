@@ -1,10 +1,11 @@
 """Generate the Open Financial Terminal app icon — a black "OFT" wordmark on a white squircle tile.
 
 Minimal monochrome, polished: a flat white iOS/macOS-style squircle (superellipse) tile with a bold
-near-black "OFT" wordmark (Segoe UI Black), optically kerned and centered. Proportions follow the
-golden ratio — the wordmark spans 1/φ (≈61.8%) of the tile width, so the side margins are the golden
-complement. Every embedded size is rendered INDEPENDENTLY (8x supersample for the tiny 16/32 px frames,
-4x otherwise) so the letters stay crisp at taskbar size.
+near-black "OFT" wordmark (Segoe UI Black), optically kerned and centered. The wordmark is sized for
+presence — it spans ~0.82 of the tile width at hero sizes and grows toward 0.96 at the tiny 16/32 px
+window-bar frames so it still reads big in the fixed taskbar / title-bar slot. Every embedded size is
+rendered INDEPENDENTLY (8x supersample for the tiny 16/32 px frames, 4x otherwise) so the letters stay
+crisp at taskbar size.
 
 Writes:
     packaging/oft.ico            - 6 sizes (16..256), embedded in the exe + WebView2 window + installer
@@ -28,9 +29,6 @@ from PIL import Image, ImageDraw, ImageFont
 # ── monochrome palette ───────────────────────────────────────────────────────
 WHITE = (255, 255, 255, 255)        # tile background
 INK = (20, 23, 28, 255)             # near-black #14171c — wordmark
-
-PHI = (1 + 5 ** 0.5) / 2            # golden ratio φ ≈ 1.618
-INV_PHI = 1 / PHI                   # 0.618 — wordmark width = 1/φ of the tile (golden margins)
 
 SIZES = [256, 128, 64, 48, 32, 16]
 SQUIRCLE_N = 5.0                    # superellipse exponent (~iOS squircle)
@@ -77,10 +75,10 @@ def render(out_px: int) -> Image.Image:
     dc = ImageDraw.Draw(crisp)
 
     text = "OFT"
-    # golden-ratio width: wordmark = 1/φ (≈0.618) of the tile at display sizes → golden margins;
-    # nudged wider at tiny sizes so the letters stay legible.
-    target = (0.72 if out_px < 64 else INV_PHI) * res
-    gap_frac = 0.10 if out_px < 48 else 0.15
+    # Bold fill for presence: the wordmark spans ~0.82 of the tile at hero sizes, and even more
+    # (up to 0.96) at the tiny window-bar frames so it reads big at the fixed small slot.
+    target = res * (0.96 if out_px <= 16 else 0.93 if out_px <= 32 else 0.88 if out_px <= 48 else 0.82)
+    gap_frac = 0.05 if out_px < 64 else 0.13
 
     def measure(f):
         bbs = [dc.textbbox((0, 0), c, font=f, anchor="lt") for c in text]
