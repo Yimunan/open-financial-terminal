@@ -30,5 +30,6 @@ if "OFT_SECRET_KEY" not in os.environ:
         # just won't persist across runs in that edge case).
         os.environ.setdefault("OFT_SECRET_KEY", base64.urlsafe_b64encode(os.urandom(32)).decode())
 
-# Generic SEC EDGAR fair-access User-Agent (users can override with SEC_USER_AGENT).
-os.environ.setdefault("SEC_USER_AGENT", "open-financial-terminal (github release)")
+# SEC EDGAR fair-access User-Agent (users can override with SEC_USER_AGENT). MUST include a
+# contact email — EDGAR 403s UAs without one, which broke every filings fetch in the frozen app.
+os.environ.setdefault("SEC_USER_AGENT", "open-financial-terminal research@example.com")
