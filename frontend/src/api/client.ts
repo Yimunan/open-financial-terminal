@@ -541,6 +541,29 @@ export const api = {
   // Probe Alpaca market-data creds for the equity realtime source (blank key/secret → saved creds)
   testMarketDataEquity: (body: { api_key?: string; api_secret?: string; feed?: string }) =>
     send<import("./types").OkResult>("POST", "/api/settings/market-data/test-equity", body),
+  // Probe an order-book depth source for an asset class (blank source → the saved depth source)
+  testMarketDataDepth: (body: { asset: string; source?: string }) =>
+    send<import("./types").OkResult>("POST", "/api/settings/market-data/test-depth", body),
+  // Probe the options-chain source (blank → saved source/underlying)
+  testMarketDataOptions: (body: { source?: string; underlying?: string }) =>
+    send<import("./types").OkResult>("POST", "/api/settings/market-data/test-options", body),
+
+  // Options chains (standalone chain subsystem)
+  optionExpirations: (underlying: string) =>
+    get<import("./types").OptionExpirationsResponse>(
+      `/api/options/expirations?underlying=${encodeURIComponent(underlying)}`,
+    ),
+  optionChain: (underlying: string, expiry: string) =>
+    get<import("./types").OptionChainResponse>(
+      `/api/options/chain?underlying=${encodeURIComponent(underlying)}&expiry=${encodeURIComponent(expiry)}`,
+    ),
+  // Single-leg option paper order (local sim book). Premium is per-contract (not ×100).
+  submitOptionOrder: (body: {
+    underlying?: string; expiry?: string; strike?: number; right?: "call" | "put"; occ?: string;
+    side: "buy" | "sell"; quantity: number; type?: string; limit_price?: number;
+  }) => send<{ order_id: string; ok: boolean; book: string; occ: string }>(
+    "POST", "/api/paper/option-order", body,
+  ),
   // Remove the saved Alpaca credentials entirely (broker falls back to the local sim)
   removeAlpacaCreds: () =>
     send<import("./types").MarketDataSettings>("DELETE", "/api/settings/market-data/alpaca"),

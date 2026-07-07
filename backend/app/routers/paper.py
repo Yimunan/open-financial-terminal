@@ -370,6 +370,50 @@ def _order_from(body: OrderIn) -> tuple[Order, OrderSide]:
     return order, side
 
 
+class OptionOrderIn(BaseModel):
+    occ: str = ""                       # OCC contract id (preferred); else built from the fields below
+    underlying: str = ""
+    expiry: str = ""                    # ISO YYYY-MM-DD
+    strike: float | None = None
+    right: str = ""                     # call | put
+    side: str                           # buy | sell (to open or close)
+    quantity: float                     # number of contracts
+    type: str = "market"                # market | limit
+    limit_price: float | None = None    # per-contract premium (e.g. 3.50), not ×100
+    account: int = 1
+
+
+@router.post("/option-order")
+def option_order(body: OptionOrderIn) -> dict:
+    """Single-leg option paper order — always the local sim book (Alpaca/qhfi has no options path).
+
+    Priced off the chain service (per-contract $ = mark × 100), so it flows through the generic
+    SimBroker fill/position/P&L machinery; the position shows in the paper book tagged asset 'option'.
+    """
+    from app.services import options as opt
+
+    occ = body.occ.strip().upper()
+    if not occ:
+        if not (body.underlying and body.expiry and body.right and body.strike):
+            raise HTTPException(400, "provide occ, or underlying+expiry+right+strike")
+        occ = opt.occ_symbol(body.underlying, body.expiry, body.right, float(body.strike))
+    try:
+        side = OrderSide(body.side.lower())
+    except ValueError:
+        raise HTTPException(400, "side must be 'buy' or 'sell'") from None
+    if body.quantity <= 0:
+        raise HTTPException(400, "quantity (contracts) must be positive")
+    # a per-contract premium limit is compared against the ×100 mark inside the broker
+    lp = body.limit_price * 100 if (body.type == "limit" and body.limit_price) else None
+    order = Order(instrument_id=occ, side=side, quantity=body.quantity, type=body.type, limit_price=lp)
+    broker = get_sim_broker(body.account)
+    try:
+        oid = broker.submit(order, "option")
+    except Exception as e:  # noqa: BLE001 - bad symbol / no price / insufficient buying power
+        raise HTTPException(400, str(e)) from None
+    return {"order_id": oid, "ok": True, "book": "sim", "occ": occ}
+
+
 @router.post("/orders")
 def submit(body: OrderIn, broker=Depends(book_broker)) -> dict:
     order, _ = _order_from(body)

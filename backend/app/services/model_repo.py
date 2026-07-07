@@ -8,6 +8,7 @@ with their versions/stages/metrics, plus stage promotion. Read-only apart from `
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from qhfi.models import ModelRepository, ModelStage
@@ -55,7 +56,7 @@ def list_repo_models(store: Any) -> dict:
             "latest": versions[0]["version"] if versions else None,
             "production_version": prod,
         })
-    return {"models": models, "root": root, "exists": repo.root.exists()}
+    return {"models": models, "root": root, "exists": Path(root).exists()}
 
 
 def promote_model(store: Any, name: str, version: int, stage: str) -> dict:

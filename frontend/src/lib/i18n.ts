@@ -57,6 +57,8 @@ const en = {
   "widget.quote": "Quote",
   "widget.orderbook": "Order Book",
   "widget.timesales": "Time & Sales",
+  "widget.options_chain": "Option Chain",
+  "widget.options_surface": "Options Surface",
   "widget.news": "News",
   "widget.topicnews": "Topic News",
   "widget.research": "Research",
@@ -135,6 +137,9 @@ const en = {
 
   // order book / tape
   "book.cryptoOnly": "Order book depth is available for crypto symbols only (free exchange feeds). Link this widget to a crypto symbol like BTC/USDT — equities L2 needs a paid data plan.",
+  "book.depthOff": "Depth is off for this asset class — enable it in Settings → Market Data.",
+  "book.synthetic": "sim",
+  "book.syntheticHint": "Synthetic depth — a modelled order book around the real mid price.",
   "book.connecting": "Connecting to {x} depth…",
   "book.stream": "Stream: {x}",
   "book.bidSize": "Bid · Size",
@@ -471,6 +476,9 @@ const zh: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "股票日内历史数据较短（yfinance）——请尝试更长的周期。",
 
   "book.cryptoOnly": "盘口深度仅支持加密货币（免费交易所行情）。请将此组件链接到加密货币代码（如 BTC/USDT）——股票 L2 需要付费数据源。",
+  "book.depthOff": "该资产类别的盘口深度已关闭——请在 设置 → 市场数据 中启用。",
+  "book.synthetic": "模拟",
+  "book.syntheticHint": "合成深度——围绕真实中间价建模的订单簿。",
   "book.connecting": "正在连接 {x} 深度行情…",
   "book.stream": "行情流：{x}",
   "book.bidSize": "买盘 · 数量",
@@ -636,6 +644,9 @@ const ja: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "株式の日中データは浅いです（yfinance）——より長い時間足をお試しください。",
 
   "book.cryptoOnly": "板情報は暗号資産のみ対応です（無料の取引所フィード）。BTC/USDT などの暗号資産にリンクしてください——株式のL2は有料データが必要です。",
+  "book.depthOff": "この資産クラスの板情報はオフです——設定 → マーケットデータ で有効化してください。",
+  "book.synthetic": "疑似",
+  "book.syntheticHint": "合成された板情報——実際の仲値を中心にモデル化した注文板です。",
   "book.connecting": "{x} の板に接続中…",
   "book.stream": "ストリーム：{x}",
   "book.bidSize": "買気配 · 数量",
@@ -776,6 +787,9 @@ const ko: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "주식 일중 데이터는 짧습니다(yfinance) — 더 긴 주기를 사용해 보세요.",
 
   "book.cryptoOnly": "호가 데이터는 암호화폐만 지원합니다(무료 거래소 피드). 이 위젯을 BTC/USDT 같은 암호화폐에 연결하세요 — 주식 L2는 유료 데이터가 필요합니다.",
+  "book.depthOff": "이 자산 클래스의 호가 심도가 꺼져 있습니다 — 설정 → 마켓 데이터에서 활성화하세요.",
+  "book.synthetic": "모의",
+  "book.syntheticHint": "합성 심도 — 실제 중간가격을 기준으로 모델링한 호가창입니다.",
   "book.connecting": "{x} 호가에 연결 중…",
   "book.stream": "스트림: {x}",
   "book.bidSize": "매수 · 수량",
@@ -916,6 +930,9 @@ const es: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "El histórico intradía de acciones es corto (yfinance): prueba un marco temporal mayor.",
 
   "book.cryptoOnly": "La profundidad de mercado solo está disponible para cripto (datos gratuitos de exchange). Vincula este widget a un símbolo cripto como BTC/USDT; el L2 de acciones requiere datos de pago.",
+  "book.depthOff": "La profundidad está desactivada para esta clase de activo: actívala en Ajustes → Datos de mercado.",
+  "book.synthetic": "sim",
+  "book.syntheticHint": "Profundidad sintética: un libro de órdenes modelado en torno al precio medio real.",
   "book.connecting": "Conectando a la profundidad de {x}…",
   "book.stream": "Stream: {x}",
   "book.bidSize": "Compra · Tamaño",
@@ -1056,6 +1073,9 @@ const de: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "Intraday-Historie für Aktien ist kurz (yfinance) – längeren Zeitrahmen wählen.",
 
   "book.cryptoOnly": "Orderbuchtiefe gibt es nur für Krypto (kostenlose Börsen-Feeds). Widget mit einem Krypto-Symbol wie BTC/USDT verknüpfen – Aktien-L2 erfordert kostenpflichtige Daten.",
+  "book.depthOff": "Die Orderbuchtiefe ist für diese Anlageklasse deaktiviert – aktiviere sie unter Einstellungen → Marktdaten.",
+  "book.synthetic": "Sim",
+  "book.syntheticHint": "Synthetische Tiefe – ein um den realen Mittelkurs modelliertes Orderbuch.",
   "book.connecting": "Verbinde mit {x}-Orderbuch…",
   "book.stream": "Stream: {x}",
   "book.bidSize": "Geld · Stück",
@@ -1196,6 +1216,9 @@ const fr: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "L’historique intrajournalier des actions est court (yfinance) — essayez une période plus longue.",
 
   "book.cryptoOnly": "La profondeur du carnet n’est disponible que pour les cryptos (flux d’échange gratuits). Liez ce widget à un symbole crypto comme BTC/USDT — le L2 actions nécessite des données payantes.",
+  "book.depthOff": "La profondeur est désactivée pour cette classe d’actifs — activez-la dans Paramètres → Données de marché.",
+  "book.synthetic": "sim",
+  "book.syntheticHint": "Profondeur synthétique — un carnet d’ordres modélisé autour du prix moyen réel.",
   "book.connecting": "Connexion à la profondeur de {x}…",
   "book.stream": "Flux : {x}",
   "book.bidSize": "Achat · Qté",
@@ -1336,6 +1359,9 @@ const zht: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "股票盤中歷史資料較短（yfinance）——請改用較長的週期。",
 
   "book.cryptoOnly": "委託簿深度僅支援加密貨幣（免費交易所行情）。請將此元件連結到加密貨幣代號（如 BTC/USDT）——股票 L2 需要付費資料來源。",
+  "book.depthOff": "此資產類別的委託簿深度已關閉——請在 設定 → 市場資料 中啟用。",
+  "book.synthetic": "模擬",
+  "book.syntheticHint": "合成深度——圍繞真實中間價建模的委託簿。",
   "book.connecting": "正在連線 {x} 深度行情…",
   "book.stream": "行情串流：{x}",
   "book.bidSize": "買盤 · 數量",
@@ -1476,6 +1502,9 @@ const pt: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "O histórico intradiário de ações é curto (yfinance) — tente um período maior.",
 
   "book.cryptoOnly": "A profundidade do livro está disponível apenas para cripto (feeds gratuitos de exchange). Vincule este widget a um ativo cripto como BTC/USDT — L2 de ações exige dados pagos.",
+  "book.depthOff": "A profundidade está desativada para esta classe de ativos — ative em Configurações → Dados de mercado.",
+  "book.synthetic": "sim",
+  "book.syntheticHint": "Profundidade sintética — um livro de ofertas modelado em torno do preço médio real.",
   "book.connecting": "Conectando à profundidade de {x}…",
   "book.stream": "Stream: {x}",
   "book.bidSize": "Compra · Qtde",
@@ -1616,6 +1645,9 @@ const ru: Partial<Record<I18nKey, string>> = {
   "chart.intradayShallow": "Внутридневная история акций короткая (yfinance) — выберите более длинный таймфрейм.",
 
   "book.cryptoOnly": "Стакан доступен только для криптовалют (бесплатные биржевые потоки). Привяжите виджет к крипто-тикеру, например BTC/USDT — L2 по акциям требует платных данных.",
+  "book.depthOff": "Стакан отключён для этого класса активов — включите его в Настройки → Рыночные данные.",
+  "book.synthetic": "сим",
+  "book.syntheticHint": "Синтетический стакан — смоделирован вокруг реальной средней цены.",
   "book.connecting": "Подключение к стакану {x}…",
   "book.stream": "Поток: {x}",
   "book.bidSize": "Покупка · Объём",
