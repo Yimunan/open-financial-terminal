@@ -442,9 +442,9 @@ class DataRefreshRunner:
         from qhfi.data.providers.macro import MACRO_SERIES, MacroProvider
 
         store = get_macro_store()
-        # Default MacroProvider is already the right shape: fast-fail FRED (8s timeout) + DBnomics
-        # with throttle/retry for 429s. After FRED times out once it flips _fred_dead and the rest
-        # go straight to DBnomics, so the whole set lands in ~one FRED-timeout + N DBnomics calls.
+        # MacroProvider rides the keyless FRED CSV endpoint with a fast-fail cooldown: after one
+        # timeout the rest of the batch returns empty immediately (see qhfi _fredcsv), and FRED is
+        # retried on the next run once the cooldown lapses.
         provider = MacroProvider()
         saved = 0
         for sid in MACRO_SERIES:
@@ -455,6 +455,10 @@ class DataRefreshRunner:
                     saved += 1
             except Exception:  # noqa: BLE001 - skip a flaky series, keep going
                 log.debug("macro series failed: %s", sid, exc_info=True)
+        if not saved and MACRO_SERIES:
+            # An all-miss batch is an outage (FRED unreachable / cooldown), not a success — surface
+            # it as an error so status readers see the failure instead of a silent empty lake.
+            raise RuntimeError(f"0/{len(MACRO_SERIES)} series saved — FRED unreachable?")
         return {"series": saved, "total": len(MACRO_SERIES)}
 
     def _refresh_filings(self) -> dict:
