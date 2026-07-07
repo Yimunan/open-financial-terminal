@@ -750,6 +750,27 @@ export interface OptionChainResponse {
   puts: OptionQuote[];
   note: string | null;
 }
+/** One leg of a multi-leg (combo) paper option order — an OCC id, or the chain coordinates. */
+export interface ComboLeg {
+  occ?: string;
+  underlying?: string;
+  expiry?: string;
+  strike?: number;
+  right?: OptionRight;
+  side: "buy" | "sell";
+  ratio?: number; // contracts of this leg per 1 spread unit (default 1)
+}
+export interface ComboOrderRequest {
+  legs: ComboLeg[];
+  quantity?: number; // number of spread units
+  account?: number;
+}
+export interface ComboOrderResult {
+  ok: boolean;
+  book: string;
+  net_debit: number; // >0 = net debit (paid), <0 = net credit (received)
+  legs: { occ: string; order_id: string; side: string; quantity: number }[];
+}
 /** Per-asset-class order-book status. `token` is the hub topic segment to subscribe on
  * (book:<token>:<symbol>); empty when depth is off. Backend-computed; the UI never builds it. */
 export interface DepthStatus {

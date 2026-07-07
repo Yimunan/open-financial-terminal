@@ -564,6 +564,9 @@ export const api = {
   }) => send<{ order_id: string; ok: boolean; book: string; occ: string }>(
     "POST", "/api/paper/option-order", body,
   ),
+  // Multi-leg (combo) option paper order — 2–4 legs, market, local sim book.
+  submitComboOrder: (body: import("./types").ComboOrderRequest) =>
+    send<import("./types").ComboOrderResult>("POST", "/api/paper/combo-order", body),
   // Remove the saved Alpaca credentials entirely (broker falls back to the local sim)
   removeAlpacaCreds: () =>
     send<import("./types").MarketDataSettings>("DELETE", "/api/settings/market-data/alpaca"),

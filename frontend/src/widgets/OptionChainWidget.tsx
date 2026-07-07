@@ -16,6 +16,8 @@ const RANGE_OPTS = [0, 25, 15, 8]; // ±% of spot to show; 0 = all strikes
 type ColView = "price" | "greeks";
 type BarMetric = "oi" | "vol";
 type ColKey = "flow" | "bid" | "ask" | "iv" | "delta" | "gamma" | "theta" | "vega";
+/** One leg of the trade ticket: a contract (right+strike) plus its buy/sell side. */
+type Leg = { right: OptionRight; strike: number; side: "buy" | "sell" };
 
 // Columns are ordered outer→inner (from the far edge toward the centre strike); the "signal"
 // column (IV / Δ) hugs the strike. The call side renders this order left→right; the put side
@@ -113,7 +115,7 @@ export default function OptionChainWidget(props: WidgetProps) {
   const [range, setRange] = useState<number>(0);
   const [view, setView] = useState<ColView>("price");
   const [metric, setMetric] = useState<BarMetric>("oi");
-  const [ticket, setTicket] = useState<{ right: OptionRight; strike: number } | null>(null);
+  const [legs, setLegs] = useState<Leg[]>([]); // 1 leg = single order, 2 = spread/combo
   const [qty, setQty] = useState<number>(1);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -146,7 +148,7 @@ export default function OptionChainWidget(props: WidgetProps) {
   const acct = useQuery({
     queryKey: ["paper", "account", "sim"],
     queryFn: () => api.paperAccount("sim"),
-    enabled: !!ticket,
+    enabled: legs.length > 0,
     staleTime: 15_000,
   });
 
@@ -203,24 +205,51 @@ export default function OptionChainWidget(props: WidgetProps) {
     return { spot: data.spot, atmIv, dte: data.dte, pcr: callOi > 0 ? putOi / callOi : null, totalOi: callOi + putOi };
   }, [data]);
 
-  // selected contract's mark → estimated order cost (mark × 100 × contracts)
-  const selRow = ticket && data
-    ? (ticket.right === "call" ? data.calls : data.puts).find((r) => r.strike === ticket.strike)
-    : null;
-  const mark = selRow ? (selRow.bid != null && selRow.ask != null ? (selRow.bid + selRow.ask) / 2 : selRow.last) : null;
-  const estCost = mark != null ? qty * mark * 100 : null;
+  // per-leg mark (per-share mid, else last) → net debit(+)/credit(−) of the built ticket
+  const legMark = (l: Leg): number | null => {
+    const r = (l.right === "call" ? data?.calls : data?.puts)?.find((x) => x.strike === l.strike);
+    if (!r) return null;
+    return r.bid != null && r.ask != null ? (r.bid + r.ask) / 2 : r.last;
+  };
+  const legMarks = legs.map(legMark);
+  const priced = legs.length > 0 && legMarks.every((m) => m != null);
+  const netPerSpread = legs.reduce((a, l, i) => a + (l.side === "buy" ? 1 : -1) * (legMarks[i] ?? 0) * 100, 0);
+  const netTotal = netPerSpread * qty; // >0 debit (pay), <0 credit (receive)
   const buyingPower = acct.data?.cash ?? null;
-  const overBP = estCost != null && buyingPower != null && estCost > buyingPower;
+  const overBP = priced && netTotal > 0 && buyingPower != null && netTotal > buyingPower;
 
-  const trade = async (side: "buy" | "sell") => {
-    if (!ticket || !expiry) return;
+  // click a contract → add it as a leg (buy the first, sell the second); click again → remove; cap 2
+  const toggleLeg = (right: OptionRight, strike: number) => {
+    setMsg(null);
+    setLegs((prev) => {
+      const at = prev.findIndex((l) => l.right === right && l.strike === strike);
+      if (at >= 0) return prev.filter((_, i) => i !== at);
+      if (prev.length >= 2) return prev;
+      return [...prev, { right, strike, side: prev.length === 0 ? "buy" : "sell" }];
+    });
+  };
+  const flipSide = (i: number) =>
+    setLegs((prev) => prev.map((l, j) => (j === i ? { ...l, side: l.side === "buy" ? "sell" : "buy" } : l)));
+
+  const submit = async () => {
+    if (!legs.length || !expiry) return;
     setBusy(true);
     setMsg(null);
     try {
-      const r = await api.submitOptionOrder({
-        underlying, expiry, strike: ticket.strike, right: ticket.right, side, quantity: qty, type: "market",
-      });
-      setMsg({ ok: true, text: `${side} ${qty} ${underlying} ${ticket.strike}${ticket.right[0].toUpperCase()} · #${r.order_id}` });
+      if (legs.length === 1) {
+        const l = legs[0];
+        const r = await api.submitOptionOrder({
+          underlying, expiry, strike: l.strike, right: l.right, side: l.side, quantity: qty, type: "market",
+        });
+        setMsg({ ok: true, text: `${l.side} ${qty} ${underlying} ${l.strike}${l.right[0].toUpperCase()} · #${r.order_id}` });
+      } else {
+        const r = await api.submitComboOrder({
+          legs: legs.map((l) => ({ underlying, expiry, strike: l.strike, right: l.right, side: l.side })),
+          quantity: qty,
+        });
+        const dir = r.net_debit >= 0 ? "debit" : "credit";
+        setMsg({ ok: true, text: `${legs.length}-leg ${underlying} spread · net ${dir} $${Math.abs(r.net_debit).toFixed(0)}` });
+      }
       qc.invalidateQueries({ queryKey: ["paper"] });
     } catch (e) {
       setMsg({ ok: false, text: e instanceof Error ? e.message : "order failed" });
@@ -338,12 +367,12 @@ export default function OptionChainWidget(props: WidgetProps) {
                         className={cx("border-b border-term-border/40", atm && "border-t-2 border-t-term-accent/60 bg-term-accent/10")}
                       >
                         <SideCells q={call} cols={cols} align="left" itm={callItm} metric={metric} barMax={bar.max} barMedian={bar.median}
-                          onSelect={() => setTicket({ right: "call", strike })}
-                          selected={ticket?.right === "call" && ticket?.strike === strike} />
+                          onSelect={() => toggleLeg("call", strike)}
+                          selected={legs.some((l) => l.right === "call" && l.strike === strike)} />
                         <td className="px-1.5 py-0.5 text-center font-mono font-semibold tabular-nums">{strike}</td>
                         <SideCells q={put} cols={cols} align="right" itm={putItm} metric={metric} barMax={bar.max} barMedian={bar.median}
-                          onSelect={() => setTicket({ right: "put", strike })}
-                          selected={ticket?.right === "put" && ticket?.strike === strike} />
+                          onSelect={() => toggleLeg("put", strike)}
+                          selected={legs.some((l) => l.right === "put" && l.strike === strike)} />
                       </tr>
                     );
                   })}
@@ -352,38 +381,43 @@ export default function OptionChainWidget(props: WidgetProps) {
             </div>
           )}
         </div>
-        {ticket && (
+        {legs.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 border-t border-term-border px-2 py-1.5 text-xs">
-            <span className="font-mono font-semibold">
-              {underlying} {ticket.strike}{ticket.right === "call" ? "C" : "P"} · {expiry}
-            </span>
+            <span className="font-mono text-[10px] text-term-muted">{underlying} · {expiry}</span>
+            {legs.map((l, i) => (
+              <span key={`${l.right}-${l.strike}`} className="flex items-center gap-1 rounded border border-term-border bg-term-sunken/40 px-1 py-0.5 font-mono">
+                <button onClick={() => flipSide(i)} title="Toggle buy/sell"
+                  className={cx("rounded px-1 text-[10px] font-bold uppercase", l.side === "buy" ? "text-term-up" : "text-term-down")}>
+                  {l.side === "buy" ? "B" : "S"}
+                </button>
+                <span>{l.strike}{l.right === "call" ? "C" : "P"}</span>
+                <button onClick={() => toggleLeg(l.right, l.strike)} className="text-term-muted hover:text-term-text" title="Remove leg">✕</button>
+              </span>
+            ))}
+            {legs.length < 2 && <span className="text-[10px] text-term-muted">+ click a strike to add a leg</span>}
             <label className="flex items-center gap-1 text-[10px] text-term-muted">
               <input
                 type="number" min={1} step={1} value={qty}
                 onChange={(e) => setQty(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
                 className="focus-ring w-16 rounded border border-term-border bg-term-sunken px-1 py-0.5 font-mono text-xs tabular-nums"
-                aria-label="contracts"
+                aria-label={legs.length > 1 ? "spreads" : "contracts"}
               />
-              contracts
+              {legs.length > 1 ? "spreads" : "contracts"}
             </label>
-            {estCost != null && (
+            {priced && (
               <span className={cx(
                 "rounded border border-term-border bg-term-sunken/40 px-1.5 py-0.5 font-mono text-[10px]",
                 overBP ? "text-term-down" : "text-term-muted",
               )}
-                title={`${qty} × ${fmtPrice(mark)} × 100${buyingPower != null ? ` · buying power $${buyingPower.toFixed(0)}` : ""}`}>
-                est. ${estCost.toFixed(0)}{overBP && " · > buying power"}
+                title={buyingPower != null ? `buying power $${buyingPower.toFixed(0)}` : undefined}>
+                net {netTotal >= 0 ? "debit" : "credit"} ${Math.abs(netTotal).toFixed(0)}{overBP && " · > buying power"}
               </span>
             )}
-            <button onClick={() => trade("buy")} disabled={busy || overBP}
-              className="rounded border border-term-up px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-term-up hover:bg-term-up/10 disabled:opacity-40">
-              Buy
+            <button onClick={submit} disabled={busy || overBP || !priced}
+              className="rounded border border-term-accent bg-term-accent/15 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-term-accent hover:bg-term-accent/25 disabled:opacity-40">
+              {legs.length > 1 ? "Submit spread" : legs[0].side === "buy" ? "Buy" : "Sell"}
             </button>
-            <button onClick={() => trade("sell")} disabled={busy}
-              className="rounded border border-term-down px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-term-down hover:bg-term-down/10 disabled:opacity-40">
-              Sell
-            </button>
-            <button onClick={() => { setTicket(null); setMsg(null); }} className="focus-ring rounded text-term-muted hover:text-term-text" title="Close ticket">✕</button>
+            <button onClick={() => { setLegs([]); setMsg(null); }} className="focus-ring rounded text-term-muted hover:text-term-text" title="Clear ticket">✕</button>
             {msg && (
               <span className={cx("truncate text-[10px]", msg.ok ? "text-term-up" : "text-term-down")}>{msg.text}</span>
             )}

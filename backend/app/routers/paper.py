@@ -414,6 +414,81 @@ def option_order(body: OptionOrderIn) -> dict:
     return {"order_id": oid, "ok": True, "book": "sim", "occ": occ}
 
 
+class ComboLegIn(BaseModel):
+    occ: str = ""                       # OCC id (preferred); else built from the fields below
+    underlying: str = ""
+    expiry: str = ""                    # ISO YYYY-MM-DD
+    strike: float | None = None
+    right: str = ""                     # call | put
+    side: str                           # buy | sell (of this leg)
+    ratio: int = 1                      # contracts of this leg per 1 spread unit
+
+
+class ComboOrderIn(BaseModel):
+    legs: list[ComboLegIn]              # 2–4 legs (v1: verticals/straddles/etc.)
+    quantity: float = 1                 # number of spread units
+    account: int = 1                    # market-only in v1 (net-limit fills are v2)
+
+
+@router.post("/combo-order")
+def combo_order(body: ComboOrderIn) -> dict:
+    """Multi-leg option paper order (v1: market, per-leg positions) — always the local sim book.
+
+    Every leg is priced off the chain (per-contract $ = mark × 100) and submitted through the
+    generic SimBroker fill/position/P&L path, so a spread shows as its individual legs in the
+    paper book. All legs are resolved + priced up front (fail fast), the net debit is pre-checked
+    against cash, then SELL (credit) legs are submitted before BUY (debit) legs so a debit spread
+    fills even when cash < the long leg's cost but ≥ the net debit.
+    """
+    from app.services import options as opt
+
+    legs = body.legs or []
+    if not (2 <= len(legs) <= 4):
+        raise HTTPException(400, "a combo needs 2–4 legs")
+    if body.quantity <= 0:
+        raise HTTPException(400, "quantity (spreads) must be positive")
+
+    # resolve OCC + validate side + price every leg before submitting any
+    resolved: list[tuple[str, OrderSide, float, float]] = []  # (occ, side, qty, mark_per_contract)
+    for i, lg in enumerate(legs):
+        occ = lg.occ.strip().upper()
+        if not occ:
+            if not (lg.underlying and lg.expiry and lg.right and lg.strike):
+                raise HTTPException(400, f"leg {i + 1}: provide occ, or underlying+expiry+right+strike")
+            occ = opt.occ_symbol(lg.underlying, lg.expiry, lg.right, float(lg.strike))
+        try:
+            side = OrderSide(lg.side.lower())
+        except ValueError:
+            raise HTTPException(400, f"leg {i + 1}: side must be 'buy' or 'sell'") from None
+        ratio = int(lg.ratio or 1)
+        if ratio <= 0:
+            raise HTTPException(400, f"leg {i + 1}: ratio must be positive")
+        mark = opt.option_mark(occ)  # per-contract $ (mark × 100)
+        if mark is None:
+            raise HTTPException(400, f"leg {i + 1}: no price for {occ}")
+        resolved.append((occ, side, ratio * body.quantity, mark))
+
+    # net debit (+) / credit (−): Σ sign(buy=+, sell=−) × mark × qty
+    net = sum((m if s == OrderSide.BUY else -m) * q for (_o, s, q, m) in resolved)
+    broker = get_sim_broker(body.account)
+    cash = broker.buying_power()
+    if net > cash + 1e-6:
+        raise HTTPException(400, f"insufficient buying power: net debit ${net:,.2f}, have ${cash:,.2f}")
+
+    # credits (sells) first, then debits (buys), so the buy legs see the freed-up cash
+    order_legs = sorted(resolved, key=lambda r: 0 if r[1] == OrderSide.SELL else 1)
+    results = []
+    for occ, side, qty, _mark in order_legs:
+        order = Order(instrument_id=occ, side=side, quantity=qty, type="market")
+        try:
+            oid = broker.submit(order, "option")
+        except Exception as e:  # noqa: BLE001 - bad symbol / no price / insufficient buying power
+            raise HTTPException(400, f"{occ}: {e}") from None
+        results.append({"occ": occ, "order_id": oid, "side": side.value, "quantity": qty})
+
+    return {"ok": True, "book": "sim", "net_debit": net, "legs": results}
+
+
 @router.post("/orders")
 def submit(body: OrderIn, broker=Depends(book_broker)) -> dict:
     order, _ = _order_from(body)
