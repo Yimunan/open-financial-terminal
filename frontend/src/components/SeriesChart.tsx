@@ -8,7 +8,9 @@ export interface SeriesSpec {
   points: LinePoint[];
   color: string;
   title?: string;
-  kind?: "line" | "area" | "histogram";
+  kind?: "line" | "area" | "histogram" | "scatter";
+  /** Marker fill for `kind:"scatter"` — filled dot (default) or hollow ring. */
+  marker?: "filled" | "hollow";
 }
 
 export interface SeriesAxisOpts {
@@ -17,7 +19,7 @@ export interface SeriesAxisOpts {
   xUnit?: string;
 }
 
-/** Generic multi-series chart on the from-scratch canvas engine (line / area / histogram).
+/** Generic multi-series chart on the from-scratch canvas engine (line / area / histogram / scatter).
  * x-axis defaults to time; pass `xMode="value"` (+ optional xTicks/xUnit) for a numeric axis
  * such as a yield curve's tenor-in-years. One engine per palette so theme changes recolor. */
 export default function SeriesChart({
