@@ -597,6 +597,34 @@ EQUITY_BARS_SOURCES = ("yfinance",)            # the only real equity bar provid
 EQUITY_REALTIME_SOURCES = ("alpaca", "none")   # Alpaca stream (needs creds) or off
 DEFAULT_CRYPTO_EXCHANGE = "kraken"
 
+# Pluggable order-book (L2 depth) producers, vendor-agnostic. 'sim' = a local simulated feed
+# (always available, no creds — a modelled ladder around the real mid); 'none' = no depth. The real
+# vendors each plug in via one build_depth_source() branch + a producer module and are gated on
+# their SDK/creds (they report 'unavailable' until configured): 'ibkr' (ib_async reqMktDepth, needs
+# IB Gateway), 'databento' (Live MBP-10 API key), 'dxfeed' (dxLink token). Equity + the three FICC
+# classes share DEPTH_SOURCES; crypto keeps 'exchange' — its existing real ccxt.pro L2 — as default.
+DEPTH_SOURCES = ("sim", "ibkr", "databento", "dxfeed", "none")
+CRYPTO_DEPTH_SOURCES = ("exchange", "sim", "none")
+DEFAULT_DEPTH_SOURCE = "sim"
+
+# Equity-options chain source (Settings → Market Data → Options). A standalone chain subsystem
+# (services/options.py), NOT a MARKET_DATA_CATEGORIES member — options are chain-shaped, not OHLCV.
+# 'yfinance' = free delayed chains + IV, greeks computed locally (Black-Scholes); real vendors plug
+# in via build_options_source() + a module, gated on SDK/creds ('unavailable' until configured).
+# OPTIONS_CAPS drives the Settings capability note + whether the widget shows source-provided greeks.
+OPTIONS_SOURCES = ("yfinance", "tradier", "polygon", "ibkr", "none")
+DEFAULT_OPTIONS_SOURCE = "yfinance"
+DEFAULT_OPTIONS_UNDERLYING = "AAPL"
+DEFAULT_OPTIONS_EXPIRY_WINDOW = 60    # days forward to list expirations
+DEFAULT_OPTIONS_CHAIN_TTL = 60.0      # seconds — chain cache lifetime
+OPTIONS_CAPS = {
+    "yfinance": {"chains": True, "iv": True, "greeks": False, "realtime": False},
+    "tradier": {"chains": True, "iv": True, "greeks": True, "realtime": True},
+    "polygon": {"chains": True, "iv": True, "greeks": True, "realtime": True},
+    "ibkr": {"chains": True, "iv": True, "greeks": True, "realtime": True},
+    "none": {"chains": False, "iv": False, "greeks": False, "realtime": False},
+}
+
 
 def _market_data_path() -> Path:
     return get_terminal_settings().data_dir / "market_data.json"
@@ -633,6 +661,7 @@ def _category_defaults() -> dict:
             "bars_source": "yfinance",
             "realtime_source": "alpaca",
             "realtime_feed": DEFAULT_EQUITY_FEED,
+            "depth_source": DEFAULT_DEPTH_SOURCE,  # order-book (L2) producer — 'sim' by default
             "intraday_ttl": DEFAULT_INTRADAY_TTL,
             "history_years": DEFAULT_HISTORY_YEARS,
             "default_symbol": "AAPL",
@@ -640,19 +669,31 @@ def _category_defaults() -> dict:
         "crypto": {
             "source": ex,                          # ccxt exchange — drives bars + realtime
             "realtime": True,                      # live ticker/book/trades on; off keeps bars/charts
+            "depth_source": "exchange",            # 'exchange' = the real ccxt.pro L2 (unchanged default)
             "intraday_ttl": DEFAULT_INTRADAY_TTL,
             "history_years": DEFAULT_HISTORY_YEARS,
             "default_symbol": "BTC/USDT",
         },
-        # FICC classes share one simple shape (yfinance bars; no exchange/realtime knobs).
+        # FICC classes share one simple shape (yfinance bars; no exchange/realtime knobs, but a
+        # selectable order-book depth producer like equity).
         **{
             cat: {
                 "bars_source": "yfinance",
+                "depth_source": DEFAULT_DEPTH_SOURCE,
                 "intraday_ttl": DEFAULT_INTRADAY_TTL,
                 "history_years": DEFAULT_HISTORY_YEARS,
                 "default_symbol": FICC_DEFAULT_SYMBOLS[cat],
             }
             for cat in FICC_CATEGORIES
+        },
+        # Options: a standalone chain subsystem (not OHLCV) — a chain source + chain knobs. Kept out
+        # of MARKET_DATA_CATEGORIES so the bars/depth/_category loops never touch it.
+        "options": {
+            "source": DEFAULT_OPTIONS_SOURCE,
+            "default_underlying": DEFAULT_OPTIONS_UNDERLYING,
+            "expiry_window": DEFAULT_OPTIONS_EXPIRY_WINDOW,
+            "chain_ttl": DEFAULT_OPTIONS_CHAIN_TTL,
+            "greeks": "auto",   # 'auto' = compute via Black-Scholes when the source lacks greeks
         },
     }
 
@@ -670,6 +711,8 @@ def _overlay_categories(cats: dict, saved: object) -> None:
             eq["realtime_source"] = str(se["realtime_source"]).strip().lower()
         if str(se.get("realtime_feed") or "").strip().lower() in SUPPORTED_EQUITY_FEEDS:
             eq["realtime_feed"] = str(se["realtime_feed"]).strip().lower()
+        if str(se.get("depth_source") or "").strip().lower() in DEPTH_SOURCES:
+            eq["depth_source"] = str(se["depth_source"]).strip().lower()
         if "intraday_ttl" in se:
             eq["intraday_ttl"] = _clamp_ttl(se["intraday_ttl"])
         if "history_years" in se:
@@ -680,6 +723,8 @@ def _overlay_categories(cats: dict, saved: object) -> None:
     if isinstance(sc, dict):
         if str(sc.get("source") or "").strip().lower() in SUPPORTED_EXCHANGES:
             cr["source"] = str(sc["source"]).strip().lower()
+        if str(sc.get("depth_source") or "").strip().lower() in CRYPTO_DEPTH_SOURCES:
+            cr["depth_source"] = str(sc["depth_source"]).strip().lower()
         if "realtime" in sc:
             cr["realtime"] = bool(sc["realtime"])
         if "intraday_ttl" in sc:
@@ -688,18 +733,37 @@ def _overlay_categories(cats: dict, saved: object) -> None:
             cr["history_years"] = _clamp_history_years(sc["history_years"])
         if "default_symbol" in sc:
             cr["default_symbol"] = _clamp_symbol(sc["default_symbol"], cr["default_symbol"])
-    # FICC categories: only history / cache TTL / default symbol are configurable.
+    # FICC categories: history / cache TTL / default symbol + a selectable depth (order-book) source.
     for cat in FICC_CATEGORIES:
         sf = saved.get(cat)
         if not isinstance(sf, dict) or cat not in cats:
             continue
         rec = cats[cat]
+        if str(sf.get("depth_source") or "").strip().lower() in DEPTH_SOURCES:
+            rec["depth_source"] = str(sf["depth_source"]).strip().lower()
         if "intraday_ttl" in sf:
             rec["intraday_ttl"] = _clamp_ttl(sf["intraday_ttl"])
         if "history_years" in sf:
             rec["history_years"] = _clamp_history_years(sf["history_years"])
         if "default_symbol" in sf:
             rec["default_symbol"] = _clamp_symbol(sf["default_symbol"], rec["default_symbol"])
+    # Options (standalone chain subsystem): source + chain knobs.
+    so = saved.get("options")
+    if isinstance(so, dict) and "options" in cats:
+        opt = cats["options"]
+        if str(so.get("source") or "").strip().lower() in OPTIONS_SOURCES:
+            opt["source"] = str(so["source"]).strip().lower()
+        if "default_underlying" in so:
+            opt["default_underlying"] = _clamp_symbol(so["default_underlying"], opt["default_underlying"])
+        if "expiry_window" in so:
+            try:
+                opt["expiry_window"] = max(7, min(365, int(so["expiry_window"])))
+            except (TypeError, ValueError):
+                pass
+        if "chain_ttl" in so:
+            opt["chain_ttl"] = _clamp_ttl(so["chain_ttl"], DEFAULT_OPTIONS_CHAIN_TTL)
+        if str(so.get("greeks") or "").strip().lower() in ("auto", "passthrough", "off"):
+            opt["greeks"] = str(so["greeks"]).strip().lower()
 
 
 def _merge_saved(cats: dict, data: dict) -> None:
@@ -887,3 +951,75 @@ def get_alpaca_creds() -> tuple[str, str, bool]:
 def get_equity_feed() -> str:
     """Alpaca equity real-time feed, 'iex' or 'sip' (override → else default)."""
     return get_market_data_config()["categories"]["equity"]["realtime_feed"]
+
+
+def get_depth_source(asset: str = "equity") -> str:
+    """The order-book (L2) depth producer for an asset class ('sim'/'exchange'/'none'/vendor id)."""
+    return _category(asset).get("depth_source", "none")
+
+
+def get_depth_topic_token(asset: str = "equity") -> str:
+    """The realtime-hub 'exchange' segment for this asset's ``book:`` topic, '' when depth is off.
+
+    Crypto with the 'exchange' source keeps its existing real ccxt.pro path — the token is just the
+    ccxt exchange id (e.g. 'kraken', no dot → routed to the ccxt watch loop). Every other producer
+    encodes vendor + asset as ``{source}.{asset}`` (e.g. 'sim.equity') so the hub can pick the right
+    mid provider and symbol mapping. The frontend never builds this — it reads it from /api/health.
+    """
+    src = get_depth_source(asset)
+    if not src or src == "none":
+        return ""
+    if asset == "crypto" and src == "exchange":
+        return get_crypto_exchange()
+    return f"{src}.{asset}"
+
+
+def get_depth_enabled(asset: str = "equity") -> bool:
+    """Whether order-book depth is available for an asset class right now.
+
+    'none' → off. Crypto real L2 honors the crypto realtime toggle (so 'Realtime: off' also stops
+    the book). 'sim' is always available. Vendor sources will gate on their own creds in the future.
+    """
+    src = get_depth_source(asset)
+    if not src or src == "none":
+        return False
+    if asset == "crypto" and src == "exchange":
+        return get_crypto_realtime_enabled()
+    return True
+
+
+def _options_cfg() -> dict:
+    """The options-chain config record (standalone; not a MARKET_DATA_CATEGORIES member)."""
+    return get_market_data_config()["categories"].get("options", {})
+
+
+def get_options_source() -> str:
+    """The active options-chain source id ('yfinance'/'tradier'/'polygon'/'ibkr'/'none')."""
+    return _options_cfg().get("source", DEFAULT_OPTIONS_SOURCE)
+
+
+def get_options_enabled() -> bool:
+    """Whether an options-chain source is selected (not 'none')."""
+    src = get_options_source()
+    return bool(src) and src != "none"
+
+
+def get_options_caps(source: str | None = None) -> dict:
+    """Capability map (chains/iv/greeks/realtime) for a source (default: the active one)."""
+    return OPTIONS_CAPS.get(source or get_options_source(), OPTIONS_CAPS["none"])
+
+
+def get_options_default_underlying() -> str:
+    return _options_cfg().get("default_underlying", DEFAULT_OPTIONS_UNDERLYING)
+
+
+def get_options_expiry_window() -> int:
+    return int(_options_cfg().get("expiry_window", DEFAULT_OPTIONS_EXPIRY_WINDOW))
+
+
+def get_options_chain_ttl() -> float:
+    return float(_options_cfg().get("chain_ttl", DEFAULT_OPTIONS_CHAIN_TTL))
+
+
+def get_options_greeks_mode() -> str:
+    return _options_cfg().get("greeks", "auto")

@@ -23,6 +23,8 @@ frontend/.vite/
 # Desktop build artifacts (PyInstaller onedir + Inno Setup installer)
 backend/dist_desktop/
 backend/build_desktop/
+backend/dist-mac/
+backend/build-mac/
 packaging/dist_installer/
 
 # Icon-design iteration / preview images (not shipped)

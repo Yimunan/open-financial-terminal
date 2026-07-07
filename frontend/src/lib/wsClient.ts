@@ -88,10 +88,19 @@ export const topics = {
   trades: (symbol: string, exchange = streamExchange) => `trades:${exchange}:${symbol}`,
 };
 
+/** Order-book (`book`) topic for the configured depth source of an asset class. `token` comes from
+ * /api/health depth[asset].token (e.g. "sim.equity" for the simulated feed, or a ccxt exchange id
+ * like "kraken" for crypto's real L2); an empty token means depth is off → returns null (don't
+ * subscribe). The backend computes the token so the frontend stays source-agnostic. */
+export function depthBookTopic(symbol: string, token: string): string | null {
+  return token ? `book:${token}:${symbol}` : null;
+}
+
 /** Source token for equity realtime topics (matches the backend's EQUITY_SOURCE). */
 export const EQUITY_STREAM_SOURCE = "alpaca";
 
-/** Equity realtime topics (Alpaca). Only ticker + trades — no L2 depth (`book`) for equities.
+/** Equity realtime topics (Alpaca). Only ticker + trades here — Alpaca has no L2 depth; equity
+ * order-book depth comes from a separate depth source via `depthBookTopic` (see /api/health depth).
  * Whether to subscribe is gated by `useEquityStreamEnabled()` (driven by /api/health). */
 export const equityTopics = {
   ticker: (symbol: string) => `ticker:${EQUITY_STREAM_SOURCE}:${symbol}`,

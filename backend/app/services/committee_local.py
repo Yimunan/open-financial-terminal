@@ -13,6 +13,7 @@ Sequential, low-temperature, bounded output — a few seconds total against a wa
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 _MAX_ANALYSTS = 4
@@ -75,3 +76,44 @@ def deliberate(llm: Any, model: str, committee: str, members: list[dict] | None,
     transcript = "\n\n".join(f"**{r}**\n{t}" for r, t in takes)
     result = f"{transcript}\n\n---\n\n{verdict_md}" if transcript else verdict_md
     return {"result": result}
+
+
+def _split_for_stream(committee: str, members: list[dict] | None) -> tuple[list[dict], dict]:
+    """Return ``(analysts, chair)`` using the **last** member as Chair.
+
+    This mirrors the Committee widget's convention (``defaultLayout``/``defaultEdges`` treat
+    ``members[-1]`` as the synthesizer), so the streamed ``task`` frames line up with the exact
+    agent cards the user sees — unlike ``deliberate`` above, which hint-matches the Chair for the
+    non-visual agent-node path.
+    """
+    roster = [m for m in (members or []) if (m.get("role") or "").strip()]
+    if not roster:
+        return ([{"role": "Strategy Analyst", "goal": "Assess the matter under review.", "backstory": ""}],
+                {"role": f"{committee} Chair"})
+    if len(roster) == 1:
+        return ([], roster[0])
+    return (roster[:-1], roster[-1])
+
+
+async def stream_deliberation(llm: Any, model: str, committee: str, members: list[dict] | None,
+                              mandate: str):
+    """Async-yield ``(event, payload)`` frames mirroring the crewai-service SSE stream, so the
+    Committee widget renders a live *local* deliberation when the external service is unavailable.
+
+    Emits ``("task", {"agent": role, "raw": text})`` per analyst as each opinion lands, then
+    ``("result", <chair markdown+fenced-json>)`` — the same shape the router relays from the real
+    service, so the widget needs no changes. Blocking LLM calls run in a worker thread so the
+    WebSocket stays responsive. Raises only if the Chair synthesis itself fails (the caller then
+    surfaces an error frame); a single analyst failing is skipped, not fatal.
+    """
+    analysts, chair = _split_for_stream(committee, members)
+    takes: list[tuple[str, str]] = []
+    for m in analysts:
+        try:
+            take = await asyncio.to_thread(_persona_take, llm, model, m, mandate)
+        except Exception:  # noqa: BLE001 - one persona failing shouldn't sink the panel
+            continue
+        takes.append((m.get("role", "Analyst"), take))
+        yield "task", {"agent": m.get("role", "Analyst"), "raw": take}
+    verdict_md = await asyncio.to_thread(_chair_synthesis, llm, model, chair, mandate, takes)
+    yield "result", verdict_md

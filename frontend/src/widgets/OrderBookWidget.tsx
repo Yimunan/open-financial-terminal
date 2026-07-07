@@ -3,8 +3,8 @@ import type { BookFrame } from "../api/types";
 import { cx, fmtPrice, fmtQty } from "../lib/format";
 import { useT } from "../lib/i18n";
 import { DepthChart, type DepthColors } from "../lib/depthChart";
-import { subscribeStream, topics } from "../lib/wsClient";
-import { useCryptoStreamEnabled } from "../lib/useEquityStream";
+import { subscribeStream, depthBookTopic } from "../lib/wsClient";
+import { useDepthStatus } from "../lib/useEquityStream";
 import { themeColor, usePalette } from "../state/settings";
 import type { WidgetProps } from "../workspace/widgetRegistry";
 import { IconButton, WidgetShell, useWidgetSymbol } from "./shell";
@@ -98,8 +98,9 @@ export default function OrderBookWidget(props: WidgetProps) {
   const [book, setBook] = useState<BookFrame | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
-  const cryptoStream = useCryptoStreamEnabled();
-  const streamed = asset === "crypto" && cryptoStream;
+  const { token, source, enabled } = useDepthStatus(asset);
+  const streamed = enabled && !!token;
+  const synthetic = source === "sim"; // modelled depth around a real mid — tag it honestly
 
   const view = (props.params.bookView ?? "ladder") as BookView;
   const setView = (v: BookView) => props.api.updateParameters({ bookView: v });
@@ -108,7 +109,9 @@ export default function OrderBookWidget(props: WidgetProps) {
     if (!streamed) return;
     setBook(null);
     setStatus(null);
-    return subscribeStream(topics.book(symbol), (frame) => {
+    const topic = depthBookTopic(symbol, token);
+    if (!topic) return;
+    return subscribeStream(topic, (frame) => {
       if (frame.type === "book") {
         setBook(frame.data);
         setStatus(null);
@@ -118,7 +121,7 @@ export default function OrderBookWidget(props: WidgetProps) {
         setStatus(frame.data.message);
       }
     });
-  }, [symbol, asset, streamed]);
+  }, [symbol, asset, streamed, token]);
 
   const mid =
     book && book.bids.length && book.asks.length ? (book.bids[0][0] + book.asks[0][0]) / 2 : null;
@@ -146,6 +149,14 @@ export default function OrderBookWidget(props: WidgetProps) {
       toolbar={
         <>
           <span className="font-mono text-sm font-bold">{symbol}</span>
+          {streamed && synthetic && (
+            <span
+              className="ml-2 rounded border border-term-border px-1 text-[10px] uppercase tracking-wider text-term-muted"
+              title={t("book.syntheticHint")}
+            >
+              {t("book.synthetic")}
+            </span>
+          )}
           {streamed && (
             <div className="ml-2 flex items-center gap-px rounded border border-term-border">
               {toggleBtn(
@@ -170,10 +181,8 @@ export default function OrderBookWidget(props: WidgetProps) {
         </>
       }
     >
-      {asset !== "crypto" ? (
-        <EmptyState title={t("book.cryptoOnly")} />
-      ) : !cryptoStream ? (
-        <EmptyState title="Crypto realtime is off — enable it in Settings → Market Data" />
+      {!enabled ? (
+        <EmptyState title={t("book.depthOff")} />
       ) : !book ? (
         <EmptyState title={status ? t("book.stream", { x: status }) : t("book.connecting", { x: symbol })} />
       ) : (

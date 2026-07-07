@@ -6,10 +6,19 @@ import httpx
 from fastapi import APIRouter
 
 from app.config import (
+    MARKET_DATA_CATEGORIES,
     get_alpaca_creds,
     get_crypto_exchange,
     get_crypto_realtime_enabled,
+    get_depth_enabled,
+    get_depth_source,
+    get_depth_topic_token,
     get_engine_settings,
+    get_options_caps,
+    get_options_default_underlying,
+    get_options_enabled,
+    get_options_expiry_window,
+    get_options_source,
     get_equity_feed,
     get_realtime_source,
     get_terminal_settings,
@@ -55,6 +64,23 @@ async def health() -> dict:
         },
         # Crypto realtime: on/off per the category toggle (bars/charts keep working when off).
         "crypto_stream": {"enabled": get_crypto_realtime_enabled()},
+        # Per-class order-book depth: the chosen source, the hub topic token to subscribe on (empty
+        # when off), and whether depth is available now. Lets the OrderBook widget switch live/empty
+        # per asset class without loading Settings.
+        "depth": {
+            a: {"source": get_depth_source(a), "token": get_depth_topic_token(a),
+                "enabled": get_depth_enabled(a)}
+            for a in MARKET_DATA_CATEGORIES
+        },
+        # Options-chain status: active source, capabilities, seed underlying/window (drives the
+        # Options Chain widget's live/unavailable state + greeks-column visibility).
+        "options": {
+            "source": get_options_source(),
+            "enabled": get_options_enabled(),
+            "capabilities": get_options_caps(),
+            "default_underlying": get_options_default_underlying(),
+            "expiry_window": get_options_expiry_window(),
+        },
         "universes": list_universes(),
         # First-run data bootstrap progress (idle/running/done/skipped/error).
         "bootstrap": bootstrap_status(),

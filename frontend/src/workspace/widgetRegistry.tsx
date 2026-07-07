@@ -15,6 +15,8 @@ import MarketBoardWidget from "../widgets/MarketBoardWidget";
 import ChartWidget from "../widgets/ChartWidget";
 import QuoteWidget from "../widgets/QuoteWidget";
 import OrderBookWidget from "../widgets/OrderBookWidget";
+import OptionChainWidget from "../widgets/OptionChainWidget";
+import OptionSurfaceWidget from "../widgets/OptionSurfaceWidget";
 import TimeSalesWidget from "../widgets/TimeSalesWidget";
 import NewsWidget from "../widgets/NewsWidget";
 import TopicNewsWidget from "../widgets/TopicNewsWidget";
@@ -53,6 +55,9 @@ export interface WidgetParams {
   initialQuery?: string;
   category?: string; // topicnews: which news topic (built-in key or user topic key)
   label?: string; // topicnews: display label / panel title
+  expiry?: string; // options chain: selected expiration (YYYY-MM-DD)
+  strike?: number; // options: strike
+  right?: import("../api/types").OptionRight; // options: call/put
   // sandbox: prefill when opened from a library ("Open in Sandbox" / "+ New")
   initialMode?: SandboxMode;
   initialTrust?: SandboxTrust;
@@ -103,6 +108,8 @@ export type WidgetType =
   | "chart"
   | "quote"
   | "orderbook"
+  | "options_chain"
+  | "options_surface"
   | "timesales"
   | "news"
   | "topicnews"
@@ -183,6 +190,20 @@ export const WIDGETS: Record<WidgetType, WidgetMeta> = {
   timesales: {
     title: "Time & Sales", component: TimeSalesWidget, defaultChannel: "blue",
     assistant: { description: "Live trade prints / time & sales (crypto)", params: { symbol: "pair e.g. BTC/USDT", channel: "red/blue/green/none" } },
+  },
+  options_chain: {
+    title: "Option Chain", component: OptionChainWidget, defaultChannel: "red",
+    assistant: { description: "Equity options chain: calls|strike|puts with bid/ask/IV/greeks for a selected expiry", params: { symbol: "underlying ticker e.g. AAPL", expiry: "expiration YYYY-MM-DD", channel: "red/blue/green/none" } },
+    accepts: {
+      symbols: (p) => ({ symbol: p.symbols?.[0], asset: "equity" }),
+    },
+  },
+  options_surface: {
+    title: "Options Surface", component: OptionSurfaceWidget, defaultChannel: "red",
+    assistant: { description: "Implied-volatility smile (per expiry) and expiry×strike IV surface heatmap for an equity", params: { symbol: "underlying ticker e.g. AAPL", channel: "red/blue/green/none" } },
+    accepts: {
+      symbols: (p) => ({ symbol: p.symbols?.[0], asset: "equity" }),
+    },
   },
   news: {
     title: "News", component: NewsWidget, defaultChannel: "red",

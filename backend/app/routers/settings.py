@@ -15,16 +15,30 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.config import (
+    CRYPTO_DEPTH_SOURCES,
     DEFAULT_RANKING,
+    DEPTH_SOURCES,
     EQUITY_BARS_SOURCES,
     EQUITY_REALTIME_SOURCES,
+    FICC_CATEGORIES,
     MARKET_DATA_CATEGORIES,
+    OPTIONS_CAPS,
+    OPTIONS_SOURCES,
     SUPPORTED_EQUITY_FEEDS,
     SUPPORTED_EXCHANGES,
     clear_alpaca_creds,
     clear_llm_api_key,
     get_alpaca_creds,
+    get_default_symbol,
+    get_depth_enabled,
+    get_depth_source,
+    get_depth_topic_token,
     get_engine_settings,
+    get_options_caps,
+    get_options_default_underlying,
+    get_options_enabled,
+    get_options_expiry_window,
+    get_options_source,
     get_equity_feed,
     get_llm_override,
     get_market_data_config,
@@ -123,6 +137,18 @@ class EquityTestIn(BaseModel):
     api_key: str = ""
     api_secret: str = ""
     feed: str = ""
+
+
+class DepthTestIn(BaseModel):
+    # blank source → the asset's currently-saved depth source; blank asset → equity
+    asset: str = ""
+    source: str = ""
+
+
+class OptionsTestIn(BaseModel):
+    # blank source → the saved options source; blank underlying → the saved default underlying
+    source: str = ""
+    underlying: str = ""
 
 
 def _state() -> dict:
@@ -375,8 +401,31 @@ def _market_data_state() -> dict:
                 "bars_sources": list(EQUITY_BARS_SOURCES),
                 "realtime_sources": list(EQUITY_REALTIME_SOURCES),
                 "feeds": list(SUPPORTED_EQUITY_FEEDS),
+                "depth_sources": list(DEPTH_SOURCES),
             },
-            "crypto": {"sources": list(SUPPORTED_EXCHANGES)},
+            "crypto": {
+                "sources": list(SUPPORTED_EXCHANGES),
+                "depth_sources": list(CRYPTO_DEPTH_SOURCES),
+            },
+            # FICC classes now expose a selectable order-book depth source (like equity).
+            **{cat: {"depth_sources": list(DEPTH_SOURCES)} for cat in FICC_CATEGORIES},
+            # Options chain source (standalone; not an OHLCV category) + per-source capabilities.
+            "options": {"sources": list(OPTIONS_SOURCES), "capabilities": OPTIONS_CAPS},
+        },
+        # Per-class order-book status: the chosen source, the hub topic token the frontend uses to
+        # subscribe (empty when off), and whether depth is available right now.
+        "depth": {
+            a: {"source": get_depth_source(a), "token": get_depth_topic_token(a),
+                "enabled": get_depth_enabled(a)}
+            for a in MARKET_DATA_CATEGORIES
+        },
+        # Options-chain status: active source, capabilities, and seed knobs (for the widget/UI).
+        "options": {
+            "source": get_options_source(),
+            "enabled": get_options_enabled(),
+            "capabilities": get_options_caps(),
+            "default_underlying": get_options_default_underlying(),
+            "expiry_window": get_options_expiry_window(),
         },
         # legacy top-level mirror (back-compat for older clients + the status block)
         "exchange": cfg["exchange"],
@@ -481,6 +530,66 @@ def test_equity_source(body: EquityTestIn) -> dict:
         if feed == "sip" and ("403" in msg or "subscription" in msg.lower()):
             return {"ok": False, "detail": "key lacks a SIP data subscription — try the IEX feed"}
         return {"ok": False, "detail": f"{type(e).__name__}: {msg[:160]}"}
+
+
+@router.post("/market-data/test-depth")
+def test_depth_source(body: DepthTestIn) -> dict:
+    """Probe an order-book depth source for an asset class before saving.
+
+    Confirms a mid is obtainable and (for the simulated source) that a book can be built. A blank
+    source falls back to the asset's saved depth source. Real vendor sources report whether their
+    provider is installed + configured; the simulated source always works when a mid is available.
+    """
+    asset = (body.asset or "equity").strip().lower()
+    if asset not in MARKET_DATA_CATEGORIES:
+        return {"ok": False, "detail": f"unknown asset class '{asset}'"}
+    source = (body.source or get_depth_source(asset)).strip().lower()
+    if source in ("", "none"):
+        return {"ok": False, "detail": "depth is off for this asset class"}
+    if asset == "crypto" and source == "exchange":
+        return {"ok": True, "detail": f"crypto uses the live {get_market_data_config()['exchange']} L2 book"}
+    try:
+        from app.services.depth import build_depth_source, latest_mid, synthetic_book_frame
+
+        mgr = build_depth_source(source)
+        if mgr is None:
+            return {"ok": False, "detail": f"depth source '{source}' is not installed"}
+        if not mgr.enabled(asset):
+            return {"ok": False, "detail": f"{source}: not configured for {asset}"}
+        sym = get_default_symbol(asset)
+        mid = latest_mid(asset, sym)
+        if mid is None:
+            return {"ok": False, "detail": f"{source}: no mid for {sym} (market closed / unknown symbol?)"}
+        levels = len(synthetic_book_frame(mid)["bids"]) if source == "sim" else 0
+        detail = f"{source} · {asset} {sym} mid {mid:.4f}"
+        return {"ok": True, "detail": f"{detail} · {levels} levels/side" if levels else detail}
+    except Exception as e:  # noqa: BLE001 - surface the probe error to the UI
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+@router.post("/market-data/test-options")
+def test_options_source(body: OptionsTestIn) -> dict:
+    """Probe the options-chain source: confirm it's configured and returns a chain for a symbol."""
+    source = (body.source or get_options_source()).strip().lower()
+    if source in ("", "none"):
+        return {"ok": False, "detail": "options source is off"}
+    underlying = (body.underlying or get_options_default_underlying()).strip().upper()
+    try:
+        from app.services.options import build_options_source
+
+        src = build_options_source(source)
+        if src is None:
+            return {"ok": False, "detail": f"options source '{source}' is not installed"}
+        if not src.enabled():
+            return {"ok": False, "detail": f"{source}: not configured"}
+        exps = src.expirations(underlying)
+        if not exps:
+            return {"ok": False, "detail": f"{source}: no chain for {underlying} (market closed / unknown symbol?)"}
+        rows = src.chain(underlying, exps[0])
+        return {"ok": True,
+                "detail": f"{source} · {underlying} · {len(exps)} expiries · {len(rows)} contracts @ {exps[0]}"}
+    except Exception as e:  # noqa: BLE001 - surface the probe error to the UI
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
 @router.post("/market-data/clear-cache")

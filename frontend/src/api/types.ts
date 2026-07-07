@@ -640,6 +640,7 @@ export interface EquityCategory {
   bars_source: string; // historical-bars source ("yfinance")
   realtime_source: string; // realtime source: "alpaca" | "none"
   realtime_feed: string; // Alpaca equity feed: "iex" | "sip"
+  depth_source: string; // order-book (L2) producer: "sim" | "none"
   intraday_ttl: number;
   history_years: number;
   default_symbol: string;
@@ -647,17 +648,28 @@ export interface EquityCategory {
 export interface CryptoCategory {
   source: string; // ccxt exchange — drives BOTH bars and realtime
   realtime: boolean; // live ticker/book/trades on; off keeps bars/charts working
+  depth_source: string; // order-book source: "exchange" (real ccxt L2) | "sim" | "none"
   intraday_ttl: number;
   history_years: number;
   default_symbol: string;
 }
 /** FICC classes (rates futures / spot FX / commodity futures): yfinance bars only — no exchange or
- * realtime knobs, just the bars history window, intraday cache TTL, and the seed symbol. */
+ * realtime knobs, just the bars history window, intraday cache TTL, the seed symbol, and a
+ * selectable order-book depth source (like equity). */
 export interface FiccCategory {
   bars_source: string; // "yfinance"
+  depth_source: string; // order-book (L2) producer: "sim" | "none"
   intraday_ttl: number;
   history_years: number;
   default_symbol: string;
+}
+/** Options is a standalone chain subsystem (not an OHLCV asset class): a chain source + knobs. */
+export interface OptionsCategory {
+  source: string; // "yfinance" | "tradier" | "polygon" | "ibkr" | "none"
+  default_underlying: string;
+  expiry_window: number; // days forward to list expirations
+  chain_ttl: number; // seconds
+  greeks: string; // "auto" (compute Black-Scholes) | "passthrough" | "off"
 }
 export interface MarketDataCategories {
   equity: EquityCategory;
@@ -665,17 +677,114 @@ export interface MarketDataCategories {
   rates: FiccCategory;
   fx: FiccCategory;
   commodity: FiccCategory;
+  options?: OptionsCategory;
 }
 /** Selectable options per category, so the Settings UI can render the dropdowns. */
 export interface MarketDataCategoryMeta {
   categories: string[];
-  equity: { bars_sources: string[]; realtime_sources: string[]; feeds: string[] };
-  crypto: { sources: string[] };
+  equity: { bars_sources: string[]; realtime_sources: string[]; feeds: string[]; depth_sources: string[] };
+  crypto: { sources: string[]; depth_sources: string[] };
+  rates: { depth_sources: string[] };
+  fx: { depth_sources: string[] };
+  commodity: { depth_sources: string[] };
+  options?: { sources: string[]; capabilities: Record<string, OptionsCaps> };
 }
+/** What an options source provides (drives the Settings capability note + greeks-column visibility). */
+export interface OptionsCaps {
+  chains: boolean;
+  iv: boolean;
+  greeks: boolean;
+  realtime: boolean;
+}
+/** Options-chain status from /api/health + /api/settings/market-data. */
+export interface OptionsStatus {
+  source: string;
+  enabled: boolean;
+  capabilities: OptionsCaps;
+  default_underlying: string;
+  expiry_window: number;
+}
+export type OptionRight = "call" | "put";
+/** One option contract row (calls/puts), normalized by the backend (NaN/0 → null, iv decimal). */
+export interface OptionQuote {
+  strike: number;
+  right: OptionRight;
+  bid: number | null;
+  ask: number | null;
+  last: number | null;
+  volume: number | null;
+  open_interest: number | null;
+  iv: number | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  rho: number | null;
+  in_the_money: boolean | null;
+  contract_symbol: string | null;
+}
+export interface OptionExpiration {
+  date: string; // ISO YYYY-MM-DD
+  dte: number; // days to expiry
+  monthly: boolean;
+}
+export interface OptionExpirationsResponse {
+  underlying: string;
+  source: string;
+  expirations: OptionExpiration[];
+  note: string | null;
+}
+export interface OptionChainResponse {
+  underlying: string;
+  expiry: string;
+  dte: number;
+  monthly: boolean;
+  source: string;
+  spot: number | null;
+  risk_free_rate: number | null;
+  dividend_yield: number | null; // continuous div yield used in BS greeks (null when source-provided)
+  greeks_computed: boolean; // true = BS-derived locally; false = source passthrough
+  atm_strike: number | null;
+  strikes: number[];
+  calls: OptionQuote[];
+  puts: OptionQuote[];
+  note: string | null;
+}
+/** One leg of a multi-leg (combo) paper option order — an OCC id, or the chain coordinates. */
+export interface ComboLeg {
+  occ?: string;
+  underlying?: string;
+  expiry?: string;
+  strike?: number;
+  right?: OptionRight;
+  side: "buy" | "sell";
+  ratio?: number; // contracts of this leg per 1 spread unit (default 1)
+}
+export interface ComboOrderRequest {
+  legs: ComboLeg[];
+  quantity?: number; // number of spread units
+  account?: number;
+}
+export interface ComboOrderResult {
+  ok: boolean;
+  book: string;
+  net_debit: number; // >0 = net debit (paid), <0 = net credit (received)
+  legs: { occ: string; order_id: string; side: string; quantity: number }[];
+}
+/** Per-asset-class order-book status. `token` is the hub topic segment to subscribe on
+ * (book:<token>:<symbol>); empty when depth is off. Backend-computed; the UI never builds it. */
+export interface DepthStatus {
+  source: string; // "sim" | "exchange" | "none" | vendor id
+  token: string; // hub topic token, "" when depth is off
+  enabled: boolean; // depth available right now
+}
+export type DepthMap = Record<Asset, DepthStatus>;
 
 export interface MarketDataSettings {
   categories: MarketDataCategories; // canonical per-asset-class config
   category_meta: MarketDataCategoryMeta; // selectable options per category
+  depth: DepthMap; // per-class order-book source/token/availability
+  options?: OptionsStatus; // options-chain source status
   exchange: string; // legacy mirror: active crypto exchange (= categories.crypto.source)
   supported: string[]; // selectable exchanges
   intraday_ttl: number; // legacy mirror (= equity category)
@@ -1722,6 +1831,8 @@ export interface Health {
   crypto_exchange: string;
   equity_stream: EquityStreamStatus;
   crypto_stream: { enabled: boolean }; // crypto live streaming on/off (bars/charts work regardless)
+  depth: DepthMap; // per-class order-book source/token/availability
+  options?: OptionsStatus; // options-chain source status
   universes: string[];
   /** First-run data bootstrap progress (see backend app/services/bootstrap.py). */
   bootstrap?: {

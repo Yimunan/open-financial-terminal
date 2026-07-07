@@ -13,8 +13,11 @@ Design:
 * Subscribers are ``asyncio.Queue``s owned by websocket connections. Slow consumers
   drop frames (``put_nowait`` on a bounded queue) instead of back-pressuring the hub.
 
-Crypto-only by design: there is no free realtime depth/tape for equities. The topic
-scheme leaves room for an equities provider behind the same interface later.
+Crypto has real ticker/book/trades via ccxt.pro. Equities have ticker + trades via Alpaca (no L2
+depth). Order-book depth for equities, rates, FX and commodities comes from a pluggable depth source
+(see ``services/depth.py``): a ``book:<source>.<asset>:<symbol>`` topic is routed to that producer,
+whose snapshots flow out through the same flusher. Crypto's real book (``book:<exchange>:<symbol>``,
+no dot) is unchanged.
 """
 
 from __future__ import annotations
@@ -34,9 +37,16 @@ RETRY_DELAY = 3.0          # seconds before restarting a failed exchange watch l
 KINDS = ("ticker", "book", "trades")
 
 # Sentinel "exchange" token for equity topics (e.g. ticker:alpaca:AAPL). Routed to the Alpaca
-# stream manager instead of ccxt.pro. Alpaca gives ticker + trades (NBBO + tape) but no L2 depth,
-# so a `book:alpaca:…` topic produces nothing — order-book depth stays crypto-only.
+# stream manager instead of ccxt.pro. Alpaca gives ticker + trades (NBBO + tape) but no L2 depth —
+# equity/FICC order-book depth is served instead by the pluggable depth source below.
 EQUITY_SOURCE = "alpaca"
+
+# A `book` topic whose "exchange" segment carries a "." (e.g. book:sim.equity:AAPL) is routed to a
+# pluggable order-book depth source (services/depth.py), NOT ccxt.pro. The segment is <source>.<asset>
+# so the producer knows which mid provider + symbol mapping to use. Crypto's real ccxt.pro book keeps
+# a plain exchange id (book:kraken:BTC/USDT, no dot) and its original watch path.
+def _is_depth_book(kind: str, exchange: str) -> bool:
+    return kind == "book" and "." in exchange
 
 
 @dataclass
@@ -68,6 +78,8 @@ class RealtimeHub:
         self._flusher: asyncio.Task | None = None
         self._equity: Any = None          # lazily-built AlpacaStreamManager (equity topics)
         self._equity_reset = False        # set by request_equity_reset(); honored in the flush loop
+        self._depth: dict[str, Any] = {}  # source token → lazily-built DepthSource (depth topics)
+        self._depth_reset = False         # set by request_depth_reset(); honored in the flush loop
 
     def _equity_mgr(self) -> Any:
         """The shared Alpaca stream manager (built on first equity topic)."""
@@ -77,6 +89,17 @@ class RealtimeHub:
             self._equity = AlpacaStreamManager()
         return self._equity
 
+    def _depth_mgr(self, source: str) -> Any:
+        """The shared depth producer for a source token (built on first depth topic of that source)."""
+        mgr = self._depth.get(source)
+        if mgr is None:
+            from app.services.depth import build_depth_source
+
+            mgr = build_depth_source(source)
+            if mgr is not None:
+                self._depth[source] = mgr
+        return mgr
+
     def request_equity_reset(self) -> None:
         """Flag the Alpaca stream to rebuild (new creds/feed) on the next flush tick.
 
@@ -84,6 +107,13 @@ class RealtimeHub:
         happens in the event loop (``_flush_loop``).
         """
         self._equity_reset = True
+
+    def request_depth_reset(self) -> None:
+        """Flag the depth producers to rebuild (new source/creds) on the next flush tick.
+
+        Sync + cheap (called from the settings PUT handler); the async ``reset()`` runs in the loop.
+        """
+        self._depth_reset = True
 
     # ── subscription lifecycle ─────────────────────────────────────────────────
     async def subscribe(self, key: str, queue: asyncio.Queue) -> None:
@@ -94,7 +124,12 @@ class RealtimeHub:
             if topic is None:
                 topic = _Topic(key=key, kind=kind, exchange=exchange, symbol=symbol)
                 self._topics[key] = topic
-                watch = self._watch_equity if exchange == EQUITY_SOURCE else self._watch
+                if _is_depth_book(kind, exchange):
+                    watch = self._watch_depth
+                elif exchange == EQUITY_SOURCE:
+                    watch = self._watch_equity
+                else:
+                    watch = self._watch
                 topic.task = asyncio.create_task(watch(topic), name=f"watch-{key}")
             topic.subscribers.add(queue)
             if self._flusher is None or self._flusher.done():
@@ -109,6 +144,11 @@ class RealtimeHub:
             topic.task.cancel()
         if topic.exchange == EQUITY_SOURCE and self._equity is not None:
             self._equity.unsubscribe(topic.kind, topic.symbol)
+        elif _is_depth_book(topic.kind, topic.exchange):
+            source, _, asset = topic.exchange.partition(".")
+            mgr = self._depth.get(source)
+            if mgr is not None:
+                mgr.unsubscribe(asset, topic.symbol)
         del self._topics[key]
 
     async def unsubscribe(self, key: str, queue: asyncio.Queue) -> None:
@@ -145,11 +185,19 @@ class RealtimeHub:
             self._exchanges.clear()
             if self._equity is not None:
                 await self._equity.close()
+            for mgr in self._depth.values():
+                try:
+                    await mgr.close()
+                except Exception:  # noqa: BLE001 - best-effort shutdown
+                    pass
+            self._depth.clear()
 
     def stats(self) -> dict:
         exchanges = sorted(self._exchanges)
         if self._equity is not None and self._equity.enabled():
             exchanges = sorted({*exchanges, EQUITY_SOURCE})
+        if self._depth:
+            exchanges = sorted({*exchanges, *self._depth})
         return {
             "topics": sorted(self._topics),
             "subscribers": {k: len(t.subscribers) for k, t in self._topics.items()},
@@ -192,6 +240,33 @@ class RealtimeHub:
                 self._broadcast_now(topic, {"topic": topic.key, "type": "status",
                                             "data": {"state": "unavailable",
                                                      "error": "Alpaca credentials not configured"}})
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return
+
+    async def _watch_depth(self, topic: _Topic) -> None:
+        """Bridge a ``book:<source>.<asset>:<symbol>`` topic to its pluggable depth producer.
+
+        Like ``_watch_equity``, there is no polling here — the producer pushes book snapshots into
+        our sink (fanned out by the existing flusher) and status frames straight to subscribers. The
+        task just registers the sinks and parks until cancelled (on the last unsubscribe).
+        """
+        source, _, asset = topic.exchange.partition(".")
+        mgr = self._depth_mgr(source)
+
+        def on_book(frame: dict, _t: _Topic = topic) -> None:
+            _t.snapshot = frame
+            _t.dirty = True
+
+        def on_status(st: dict, _t: _Topic = topic) -> None:
+            self._broadcast_now(_t, {"topic": _t.key, "type": "status", "data": st})
+
+        try:
+            if mgr is None or not mgr.enabled(asset):
+                on_status({"state": "unavailable", "error": f"depth source '{source}' unavailable"})
+            if mgr is not None:
+                mgr.subscribe(asset, topic.symbol, on_book, on_status)
             while True:
                 await asyncio.sleep(3600)
         except asyncio.CancelledError:
@@ -266,6 +341,13 @@ class RealtimeHub:
                         await self._equity.reset()
                     except Exception as e:  # noqa: BLE001 - reset is best-effort
                         log.warning("equity stream reset failed: %s", e)
+            if self._depth_reset:
+                self._depth_reset = False
+                for src, mgr in list(self._depth.items()):
+                    try:
+                        await mgr.reset()
+                    except Exception as e:  # noqa: BLE001 - reset is best-effort
+                        log.warning("depth source '%s' reset failed: %s", src, e)
             for topic in list(self._topics.values()):
                 if not topic.dirty:
                     continue

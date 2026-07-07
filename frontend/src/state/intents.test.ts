@@ -100,6 +100,6 @@ describe("sendTargets", () => {
   it("derives targets from the registry accepts map", () => {
     expect(sendTargets("screen_result").sort()).toEqual(["backtest", "watchlist"]);
     expect(sendTargets("backtest_result").sort()).toEqual(["paper", "strategies"]);
-    expect(sendTargets("symbols")).toEqual(["watchlist"]);
+    expect(sendTargets("symbols").sort()).toEqual(["options_chain", "options_surface", "watchlist"]);
   });
 });

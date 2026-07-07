@@ -35,6 +35,7 @@ from app.routers import (
     market,
     market_making,
     metrics,
+    options,
     paper,
     portfolio,
     rates,
@@ -109,6 +110,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(market.router)
+app.include_router(options.router)
 app.include_router(board.router)
 app.include_router(screener.router)
 app.include_router(portfolio.router)

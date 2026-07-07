@@ -3,12 +3,66 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import type { CryptoCategory, DataRefreshConfigIn, DataRefreshStatus, EquityCategory, FiccCategory, LlmSettings, LlmTestResult, MarketDataSettings, McpServer, McpTestResult, NewsFeedCandidate, NewsSource, NewsSourceSettings, NewsTopic, RegPaths } from "../api/types";
 
-/** FICC asset classes shown in Market Data settings (yfinance bars only — history/cache/default). */
+/** FICC asset classes shown in Market Data settings (yfinance bars + a selectable depth source). */
 const FICC_MD: { key: "rates" | "fx" | "commodity"; label: string }[] = [
-  { key: "rates", label: "Rates futures" },
-  { key: "fx", label: "FX (spot)" },
-  { key: "commodity", label: "Commodities" },
+  { key: "rates", label: "Rates (futures)" },
+  { key: "fx", label: "FX" },
+  { key: "commodity", label: "Commodities (futures)" },
 ];
+
+/** Human label for an order-book depth-source id. */
+function depthLabel(s: string): string {
+  if (s === "sim") return "Simulated";
+  if (s === "exchange") return "Exchange (real L2)";
+  if (s === "ibkr") return "IBKR";
+  if (s === "databento") return "Databento";
+  if (s === "dxfeed") return "dxFeed";
+  if (s === "none") return "Off";
+  return s;
+}
+
+/** The instrument a depth source delivers for an asset class, when a class's sources differ:
+ * "spot" | "futures" | "". Today only FX splits — Simulated/IBKR/dxFeed give spot FX, but Databento
+ * serves the CME FX future. Other classes are uniform (equity/crypto = spot, rates/commodities =
+ * futures), so the block header already says it and no per-option tag is needed. */
+function depthInstrument(asset: string, source: string): "spot" | "futures" | "" {
+  if (asset !== "fx" || source === "none") return "";
+  return source === "databento" ? "futures" : "spot";
+}
+
+/** Dropdown option label, tagged with spot/futures only where a class's sources differ (FX). */
+function depthOptionLabel(asset: string, source: string): string {
+  const inst = depthInstrument(asset, source);
+  return inst ? `${depthLabel(source)} (${inst})` : depthLabel(source);
+}
+
+/** A short caveat when the selected depth vendor's book instrument differs from the block's
+ * spot/futures nature — e.g. Databento has no spot FX, so it serves the CME FX future instead.
+ * Empty when the vendor's depth matches the block (the common case). */
+function depthHint(asset: string, source: string): string {
+  if (asset === "fx" && source === "databento") return "↳ CME FX future (6E), not spot";
+  return "";
+}
+
+/** Human label for an options-chain source id. */
+function optionsSourceLabel(s: string): string {
+  if (s === "yfinance") return "yfinance (free, delayed)";
+  if (s === "tradier") return "Tradier";
+  if (s === "polygon") return "Polygon";
+  if (s === "ibkr") return "IBKR";
+  if (s === "none") return "Off";
+  return s;
+}
+
+/** Capability note for the selected options source, e.g. "chains · IV · greeks computed locally". */
+function optionsCapNote(caps?: { chains: boolean; iv: boolean; greeks: boolean; realtime: boolean }): string {
+  if (!caps || !caps.chains) return "";
+  const parts = ["chains"];
+  if (caps.iv) parts.push("IV");
+  parts.push(caps.greeks ? "greeks" : "greeks computed locally (Black-Scholes)");
+  if (caps.realtime) parts.push("realtime");
+  return parts.join(" · ");
+}
 import { useT, type Lang } from "../lib/i18n";
 import { retitlePanels } from "../workspace/layoutUtil";
 import { cx } from "../lib/format";
@@ -662,6 +716,10 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
     setMd((m) => (m ? { ...m, categories: { ...m.categories, crypto: { ...m.categories.crypto, ...p } } } : m));
   const patchFicc = (cat: "rates" | "fx" | "commodity", p: Partial<FiccCategory>) =>
     setMd((m) => (m ? { ...m, categories: { ...m.categories, [cat]: { ...m.categories[cat], ...p } } } : m));
+  const patchOptions = (p: Partial<import("../api/types").OptionsCategory>) =>
+    setMd((m) => (m && m.categories.options
+      ? { ...m, categories: { ...m.categories, options: { ...m.categories.options, ...p } } }
+      : m));
 
   useEffect(() => {
     if (!open) return;
@@ -730,6 +788,34 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
         api_secret: mdSecret,
         feed: md.categories.equity.realtime_feed,
       });
+      setMdMsg(r);
+    } catch (e) {
+      setMdMsg({ ok: false, detail: e instanceof Error ? e.message : "test failed" });
+    } finally {
+      setMdBusy(false);
+    }
+  };
+
+  const testDepth = async (asset: string, source: string) => {
+    if (!md) return;
+    setMdBusy(true);
+    setMdMsg(null);
+    try {
+      const r = await api.testMarketDataDepth({ asset, source });
+      setMdMsg(r);
+    } catch (e) {
+      setMdMsg({ ok: false, detail: e instanceof Error ? e.message : "test failed" });
+    } finally {
+      setMdBusy(false);
+    }
+  };
+
+  const testOptions = async (source: string, underlying: string) => {
+    if (!md) return;
+    setMdBusy(true);
+    setMdMsg(null);
+    try {
+      const r = await api.testMarketDataOptions({ source, underlying });
       setMdMsg(r);
     } catch (e) {
       setMdMsg({ ok: false, detail: e instanceof Error ? e.message : "test failed" });
@@ -1650,7 +1736,7 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
               {/* ── Equity category ── */}
               <div className="rounded border border-term-border/60 bg-term-sunken/30 p-2.5">
                 <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-term-accent">
-                  Equity
+                  Equity (spot)
                 </div>
                 <div className="divide-y divide-term-border/50">
                   <Row label="Bars source">
@@ -1690,6 +1776,30 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
                       </Choice>
                     ))}
                   </Row>
+                  {md.category_meta.equity.depth_sources && (
+                    <Row label="Order-book depth">
+                      <select
+                        value={md.categories.equity.depth_source}
+                        onChange={(e) => patchEquity({ depth_source: e.target.value })}
+                        className={cx(llmInputCls, "min-w-[140px]")}
+                        title="Order-book (L2) depth source"
+                      >
+                        {md.category_meta.equity.depth_sources.map((s) => (
+                          <option key={s} value={s}>
+                            {depthOptionLabel("equity", s)}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => testDepth("equity", md.categories.equity.depth_source)}
+                        disabled={mdBusy || md.categories.equity.depth_source === "none"}
+                        title="Probe the order-book depth source for the default symbol"
+                        className="shrink-0 rounded border border-term-border px-2 py-1 text-xs text-term-muted hover:border-term-accent hover:text-term-accent disabled:opacity-50"
+                      >
+                        Test
+                      </button>
+                    </Row>
+                  )}
                   <Row label="Intraday cache TTL (s)">
                     <input
                       type="number"
@@ -1730,7 +1840,7 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
               {/* ── Crypto category ── */}
               <div className="rounded border border-term-border/60 bg-term-sunken/30 p-2.5">
                 <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-term-accent">
-                  Crypto
+                  Crypto (spot)
                 </div>
                 <div className="divide-y divide-term-border/50">
                   <Row label="Exchange (bars + realtime)">
@@ -1764,6 +1874,30 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
                     </Choice>
                     <span className="text-[10px] text-term-muted">off keeps charts</span>
                   </Row>
+                  {md.category_meta.crypto.depth_sources && (
+                    <Row label="Order-book depth">
+                      <select
+                        value={md.categories.crypto.depth_source}
+                        onChange={(e) => patchCrypto({ depth_source: e.target.value })}
+                        className={cx(llmInputCls, "min-w-[140px]")}
+                        title="Order-book (L2) depth source"
+                      >
+                        {md.category_meta.crypto.depth_sources.map((s) => (
+                          <option key={s} value={s}>
+                            {depthOptionLabel("crypto", s)}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => testDepth("crypto", md.categories.crypto.depth_source)}
+                        disabled={mdBusy || md.categories.crypto.depth_source === "none"}
+                        title="Probe the crypto order-book depth source"
+                        className="shrink-0 rounded border border-term-border px-2 py-1 text-xs text-term-muted hover:border-term-accent hover:text-term-accent disabled:opacity-50"
+                      >
+                        Test
+                      </button>
+                    </Row>
+                  )}
                   <Row label="Intraday cache TTL (s)">
                     <input
                       type="number"
@@ -1814,6 +1948,35 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
                       </span>
                     </div>
                     <div className="divide-y divide-term-border/50">
+                      {md.category_meta[key]?.depth_sources && (
+                        <Row label="Order-book depth">
+                          <select
+                            value={cat.depth_source}
+                            onChange={(e) => patchFicc(key, { depth_source: e.target.value })}
+                            className={cx(llmInputCls, "min-w-[140px]")}
+                            title="Order-book (L2) depth source"
+                          >
+                            {md.category_meta[key].depth_sources.map((s) => (
+                              <option key={s} value={s}>
+                                {depthOptionLabel(key, s)}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => testDepth(key, cat.depth_source)}
+                            disabled={mdBusy || cat.depth_source === "none"}
+                            title="Probe the order-book depth source for the default symbol"
+                            className="shrink-0 rounded border border-term-border px-2 py-1 text-xs text-term-muted hover:border-term-accent hover:text-term-accent disabled:opacity-50"
+                          >
+                            Test
+                          </button>
+                          {depthHint(key, cat.depth_source) && (
+                            <span className="text-[10px] text-term-muted" title="This vendor's depth instrument differs from the spot/futures label above">
+                              {depthHint(key, cat.depth_source)}
+                            </span>
+                          )}
+                        </Row>
+                      )}
                       <Row label="Intraday cache TTL (s)">
                         <input
                           type="number"
@@ -1853,11 +2016,92 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
                 );
               })}
 
+              {/* ── Options (standalone chain subsystem — a chain source + knobs) ── */}
+              {md.categories.options && md.category_meta.options && (
+                <div className="rounded border border-term-border/60 bg-term-sunken/30 p-2.5">
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-term-accent">
+                    Options
+                    <span className="ml-1.5 font-normal normal-case tracking-normal text-term-muted">· chains</span>
+                  </div>
+                  <div className="divide-y divide-term-border/50">
+                    <Row label="Chain source">
+                      <select
+                        value={md.categories.options.source}
+                        onChange={(e) => patchOptions({ source: e.target.value })}
+                        className={cx(llmInputCls, "min-w-[160px]")}
+                        title="Options-chain data source"
+                      >
+                        {md.category_meta.options.sources.map((s) => (
+                          <option key={s} value={s}>
+                            {optionsSourceLabel(s)}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() =>
+                          testOptions(
+                            md.categories.options?.source ?? "",
+                            md.categories.options?.default_underlying ?? "",
+                          )
+                        }
+                        disabled={mdBusy || md.categories.options.source === "none"}
+                        title="Probe the options-chain source for the default underlying"
+                        className="shrink-0 rounded border border-term-border px-2 py-1 text-xs text-term-muted hover:border-term-accent hover:text-term-accent disabled:opacity-50"
+                      >
+                        Test
+                      </button>
+                    </Row>
+                    {optionsCapNote(md.category_meta.options.capabilities[md.categories.options.source]) && (
+                      <Row label="Provides">
+                        <span className="text-[10px] text-term-muted">
+                          {optionsCapNote(md.category_meta.options.capabilities[md.categories.options.source])}
+                        </span>
+                      </Row>
+                    )}
+                    <Row label="Default underlying">
+                      <input
+                        value={md.categories.options.default_underlying}
+                        onChange={(e) => patchOptions({ default_underlying: e.target.value.toUpperCase() })}
+                        className={cx(llmInputCls, "max-w-[120px]")}
+                        spellCheck={false}
+                        autoComplete="off"
+                        aria-label="Options default underlying"
+                      />
+                    </Row>
+                    <Row label="Expiries window (days)">
+                      <input
+                        type="number"
+                        min={7}
+                        max={365}
+                        step={1}
+                        value={md.categories.options.expiry_window}
+                        onChange={(e) => patchOptions({ expiry_window: clampNum(Number(e.target.value), 7, 365) })}
+                        className={cx(numCls, "w-16")}
+                        aria-label="Options expiries window days"
+                      />
+                    </Row>
+                    <Row label="Chain cache TTL (s)">
+                      <input
+                        type="number"
+                        min={5}
+                        max={600}
+                        step={5}
+                        value={md.categories.options.chain_ttl}
+                        onChange={(e) => patchOptions({ chain_ttl: clampNum(Number(e.target.value), 5, 600) })}
+                        className={cx(numCls, "w-16")}
+                        aria-label="Options chain cache TTL seconds"
+                      />
+                    </Row>
+                  </div>
+                </div>
+              )}
+
               <p className="text-[10px] leading-relaxed text-term-muted">
                 Default symbols seed the channel tickers on first launch; they don't override a symbol
-                you've already changed in a channel. Rates/FX/commodities are yfinance futures &amp; spot
-                (no exchange or realtime stream) — the history window also sets how far back the auto
-                data-refresh pulls their bars.
+                you've already changed in a channel. Rates/FX/commodities use yfinance bars (no exchange
+                or realtime tape) — the history window also sets how far back the auto data-refresh pulls
+                their bars. Order-book depth for them comes from the selected depth source (Simulated by
+                default — a modelled book around the real mid).
               </p>
             </div>
           )}
@@ -1956,8 +2200,9 @@ export default function SettingsDialog({ open, onClose }: { open: boolean; onClo
               <p className="mt-1 text-[10px] leading-relaxed text-term-muted">
                 Real-time equity ticker + time-&-sales (Market Board, Watchlist, Time&nbsp;&amp;&nbsp;Sales)
                 stream from Alpaca when the <b>Equity → Realtime source</b> is Alpaca and keys are set.
-                The <b>IEX</b>/<b>SIP</b> feed is chosen in the Equity category above. Order-book depth
-                stays crypto-only (Alpaca has no equity L2).
+                The <b>IEX</b>/<b>SIP</b> feed is chosen in the Equity category above. Alpaca has no equity
+                L2, so order-book depth for equities/rates/FX/commodities comes from the per-class
+                <b>Order-book depth</b> source (Simulated by default); crypto uses its real exchange L2.
               </p>
             </div>
           )}

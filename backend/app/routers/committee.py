@@ -3,6 +3,12 @@
 The terminal keeps CrewAI (and its heavy deps) out of process: this router forwards Knowledge-Base
 CRUD to the crewai-service and relays its deliberation SSE stream over a WebSocket so the widget can
 render the committee debating live, then a structured verdict.
+
+When the crewai-service is unreachable (it's an often-offline external process — e.g. the WSL host
+isn't up), the convene WebSocket falls back to a *local* LLM committee (``committee_local``) and
+streams it in the same frame shape, so the Investment Committee module still produces a real
+deliberation with no external dependency. This mirrors the agent-workflow committee node, which
+already degrades to the same local committee.
 """
 
 from __future__ import annotations
@@ -188,6 +194,30 @@ def _sse_events(raw: str):
     return event, "\n".join(data_lines)
 
 
+async def _local_convene(ws: WebSocket, inputs: dict) -> None:
+    """Stream a local-LLM committee deliberation when the crewai-service is unavailable.
+
+    Emits the SAME frames the SSE relay does (``task`` per analyst, ``result`` for the Chair, then
+    ``done``), so the widget renders it identically to a real crewai run. Never raises: if the local
+    LLM is also unusable it sends an ``error`` frame and closes the convene with ``done``.
+    """
+    from app.deps import get_llm_client, get_llm_model
+    from app.services import committee_local as cl
+
+    committee = inputs.get("committee") or "Investment Committee"
+    members = inputs.get("members") or DEFAULT_ROSTER
+    mandate = (inputs.get("prompt") or "").strip()
+    if inputs.get("symbol"):
+        mandate = f"Ticker under review: {inputs['symbol']}\n\n{mandate}".strip()
+    try:
+        llm, model = get_llm_client(), get_llm_model()
+        async for event, payload in cl.stream_deliberation(llm, model, committee, members, mandate):
+            await ws.send_json({"type": event, "payload": payload})
+    except Exception as e:  # noqa: BLE001 - local LLM unusable → surface, don't crash the socket
+        await ws.send_json({"type": "error", "detail": f"committee fallback failed: {type(e).__name__}"})
+    await ws.send_json({"type": "done"})
+
+
 @router.websocket("/ws")
 async def ws_committee(ws: WebSocket) -> None:
     """Client sends {prompt, symbol?, members?, knowledge_id?}; server relays the crew's
@@ -205,11 +235,15 @@ async def ws_committee(ws: WebSocket) -> None:
                 "edges": req.get("edges"),
             }
             payload = {"crew": "committee", "inputs": inputs}
+            # Prefer the real crewai-service; if it's unreachable or errors before streaming anything,
+            # fall back to a local LLM committee (same as the agent-workflow committee node). `relayed`
+            # guards against replaying locally after the service already streamed partial output.
+            relayed = False
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0)) as client:
                     async with client.stream("POST", f"{_base()}/run/stream", json=payload) as resp:
                         if resp.status_code >= 400:
-                            await ws.send_json({"type": "error", "detail": f"crewai {resp.status_code}"})
+                            await _local_convene(ws, inputs)  # service up but erroring → local fallback
                             continue
                         block: list[str] = []
                         async for line in resp.aiter_lines():
@@ -225,8 +259,14 @@ async def ws_committee(ws: WebSocket) -> None:
                             except json.JSONDecodeError:
                                 continue
                             await ws.send_json({"type": event, "payload": obj.get("payload")})
+                            relayed = True
                 await ws.send_json({"type": "done"})
             except httpx.HTTPError as e:
-                await ws.send_json({"type": "error", "detail": f"crewai-service unreachable: {type(e).__name__}"})
+                if relayed:
+                    # Dropped mid-stream after partial output — don't replay the whole deliberation.
+                    await ws.send_json({"type": "error", "detail": f"crewai-service dropped: {type(e).__name__}"})
+                    await ws.send_json({"type": "done"})
+                else:
+                    await _local_convene(ws, inputs)  # never reached the service → local fallback
     except WebSocketDisconnect:
         return
