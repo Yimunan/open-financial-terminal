@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { TradeFrame } from "../api/types";
 import { cx, fmtCompact, fmtPrice, fmtQty, fmtTime } from "../lib/format";
 import { useT } from "../lib/i18n";
-import { equityTopics, subscribeStream, topics } from "../lib/wsClient";
-import { useCryptoStreamEnabled, useEquityStreamEnabled } from "../lib/useEquityStream";
+import { subscribeStream, tradesTopic } from "../lib/wsClient";
+import { useTradesStatus } from "../lib/useEquityStream";
 import type { WidgetProps } from "../workspace/widgetRegistry";
 import { WidgetShell, useWidgetSymbol } from "./shell";
 import { EmptyState } from "../components/States";
@@ -18,34 +18,55 @@ interface Print extends TradeFrame {
 export default function TimeSalesWidget(props: WidgetProps) {
   const { symbol, asset, channel, setChannel } = useWidgetSymbol(props);
   const t = useT();
-  const equityStream = useEquityStreamEnabled();
-  const cryptoStream = useCryptoStreamEnabled();
-  const streamed = (asset === "crypto" && cryptoStream) || (asset === "equity" && equityStream);
+  const { token, source, enabled } = useTradesStatus(asset);
+  const streamed = enabled && !!token;
+  const synthetic = source === "sim"; // modelled prints around a real mid — tag it honestly
   const [prints, setPrints] = useState<Print[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
   const seq = useRef(0);
 
   useEffect(() => {
     if (!streamed) return;
     setPrints([]);
-    const topic = asset === "crypto" ? topics.trades(symbol) : equityTopics.trades(symbol);
+    setStatus(null);
+    const topic = tradesTopic(symbol, token);
+    if (!topic) return;
     return subscribeStream(topic, (frame) => {
-      if (frame.type !== "trades") return;
-      setPrints((cur) => {
-        const next = frame.data.map((t) => ({ ...t, id: ++seq.current }));
-        return [...next.reverse(), ...cur].slice(0, MAX_ROWS);
-      });
+      if (frame.type === "trades") {
+        setStatus(null);
+        setPrints((cur) => {
+          const next = frame.data.map((tr) => ({ ...tr, id: ++seq.current }));
+          return [...next.reverse(), ...cur].slice(0, MAX_ROWS);
+        });
+      } else if (frame.type === "status") {
+        setStatus(frame.data.state);
+      } else if (frame.type === "error") {
+        setStatus(frame.data.message);
+      }
     });
-  }, [symbol, asset, streamed]);
+  }, [symbol, asset, streamed, token]);
 
   return (
     <WidgetShell
       channel={channel}
       onChannelChange={setChannel}
       badge={streamed ? "live" : "eod"}
-      toolbar={<span className="font-mono text-sm font-bold">{symbol}</span>}
+      toolbar={
+        <>
+          <span className="font-mono text-sm font-bold">{symbol}</span>
+          {streamed && synthetic && (
+            <span
+              className="ml-2 rounded border border-term-border px-1 text-[10px] uppercase tracking-wider text-term-muted"
+              title={t("tape.syntheticHint")}
+            >
+              {t("book.synthetic")}
+            </span>
+          )}
+        </>
+      }
     >
       {!streamed ? (
-        <EmptyState title={t("tape.cryptoOnly")} />
+        <EmptyState title={t("tape.tradesOff")} />
       ) : (
         <table className="w-full border-collapse font-mono text-[11px]">
           <thead className="sticky top-0 bg-term-panel">
@@ -60,7 +81,7 @@ export default function TimeSalesWidget(props: WidgetProps) {
             {prints.length === 0 && (
               <tr>
                 <td colSpan={4} className="p-4 text-center text-term-muted">
-                  {t("tape.waiting", { x: symbol })}
+                  {status ? t("book.stream", { x: status }) : t("tape.waiting", { x: symbol })}
                 </td>
               </tr>
             )}

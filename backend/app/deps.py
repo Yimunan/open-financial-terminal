@@ -193,14 +193,23 @@ def reload_market_data() -> None:
 
     The data manager is rebuilt against the new ccxt exchange; the broker re-selects Alpaca vs the
     local sim from the new credentials. The realtime hub is asked to rebuild the Alpaca equity stream
-    (new creds/feed). The intraday-bars cache is cleared separately by the router.
+    (new creds/feed) and the order-book depth producers (new source/creds). The intraday-bars cache
+    is cleared separately by the router.
     """
     get_data_manager.cache_clear()
     get_broker.cache_clear()
     get_sim_broker.cache_clear()  # rebuild the sim sandbox against the new data manager
+    from app.services import autopick
+
+    autopick.invalidate()  # re-probe 'auto' picks against the new creds/settings immediately
     from app.services.realtime import get_hub
 
-    get_hub().request_equity_reset()
+    hub = get_hub()
+    hub.request_equity_reset()
+    hub.request_depth_reset()
+    from app.services import options as _options
+
+    _options.clear_options_cache()  # drop chain cache so a source change applies live
 
 
 @lru_cache

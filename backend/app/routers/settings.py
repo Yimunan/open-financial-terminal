@@ -11,25 +11,39 @@ import time
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.config import (
+    CRYPTO_DEPTH_SOURCES,
     DEFAULT_RANKING,
+    DEPTH_SOURCES,
     EQUITY_BARS_SOURCES,
     EQUITY_REALTIME_SOURCES,
+    FICC_CATEGORIES,
     MARKET_DATA_CATEGORIES,
+    OPTIONS_CAPS,
+    OPTIONS_SOURCES,
     SUPPORTED_EQUITY_FEEDS,
     SUPPORTED_EXCHANGES,
     clear_alpaca_creds,
     clear_llm_api_key,
     get_alpaca_creds,
+    get_default_symbol,
+    depth_status,
+    equity_realtime_enabled,
+    get_depth_source,
+    get_depth_source_resolved,
     get_engine_settings,
+    get_options_caps,
+    get_options_default_underlying,
+    get_options_enabled,
+    get_options_expiry_window,
+    get_options_source,
     get_equity_feed,
     get_llm_override,
     get_market_data_config,
     get_mcp_servers,
-    get_realtime_source,
     get_news_sources,
     get_news_topics,
     get_terminal_settings,
@@ -123,6 +137,18 @@ class EquityTestIn(BaseModel):
     api_key: str = ""
     api_secret: str = ""
     feed: str = ""
+
+
+class DepthTestIn(BaseModel):
+    # blank source → the asset's currently-saved depth source; blank asset → equity
+    asset: str = ""
+    source: str = ""
+
+
+class OptionsTestIn(BaseModel):
+    # blank source → the saved options source; blank underlying → the saved default underlying
+    source: str = ""
+    underlying: str = ""
 
 
 def _state() -> dict:
@@ -364,8 +390,8 @@ def _market_data_state() -> dict:
     cached_symbols = sum(1 for _ in market_root.rglob("*.parquet")) if market_root.exists() else 0
     from app.services.realtime import get_hub
 
-    # Equity real-time streaming needs both an 'alpaca' realtime source AND configured creds.
-    equity_rt_on = get_realtime_source("equity") == "alpaca" and bool(cfg["alpaca_api_key"])
+    # Equity real-time streaming needs an (auto-)resolved 'alpaca' source AND configured creds.
+    equity_rt_on = equity_realtime_enabled()
     return {
         "categories": cfg["categories"],
         # Selectable options per category, so the Settings UI can render the dropdowns.
@@ -375,8 +401,30 @@ def _market_data_state() -> dict:
                 "bars_sources": list(EQUITY_BARS_SOURCES),
                 "realtime_sources": list(EQUITY_REALTIME_SOURCES),
                 "feeds": list(SUPPORTED_EQUITY_FEEDS),
+                "depth_sources": list(DEPTH_SOURCES),
             },
-            "crypto": {"sources": list(SUPPORTED_EXCHANGES)},
+            "crypto": {
+                "sources": list(SUPPORTED_EXCHANGES),
+                "depth_sources": list(CRYPTO_DEPTH_SOURCES),
+            },
+            # FICC classes now expose a selectable order-book depth source (like equity).
+            **{cat: {"depth_sources": list(DEPTH_SOURCES)} for cat in FICC_CATEGORIES},
+            # Options chain source (standalone; not an OHLCV category) + per-source capabilities.
+            "options": {"sources": list(OPTIONS_SOURCES), "capabilities": OPTIONS_CAPS},
+        },
+        # Per-class order-book status: the chosen source, the hub topic token the frontend uses to
+        # subscribe (empty when off), and whether depth is available right now.
+        # depth_status resolves 'auto' once per asset (consistent source/token pair; 1 probe not 3).
+        # This route is sync `def`, so FastAPI already runs it on a worker thread — cold probes here
+        # never touch the event loop.
+        "depth": {a: depth_status(a) for a in MARKET_DATA_CATEGORIES},
+        # Options-chain status: active source, capabilities, and seed knobs (for the widget/UI).
+        "options": {
+            "source": get_options_source(),
+            "enabled": get_options_enabled(),
+            "capabilities": get_options_caps(),
+            "default_underlying": get_options_default_underlying(),
+            "expiry_window": get_options_expiry_window(),
         },
         # legacy top-level mirror (back-compat for older clients + the status block)
         "exchange": cfg["exchange"],
@@ -483,6 +531,70 @@ def test_equity_source(body: EquityTestIn) -> dict:
         return {"ok": False, "detail": f"{type(e).__name__}: {msg[:160]}"}
 
 
+@router.post("/market-data/test-depth")
+def test_depth_source(body: DepthTestIn) -> dict:
+    """Probe an order-book depth source for an asset class before saving.
+
+    Confirms a mid is obtainable and (for the simulated source) that a book can be built. A blank
+    source falls back to the asset's saved depth source. Real vendor sources report whether their
+    provider is installed + configured; the simulated source always works when a mid is available.
+    """
+    asset = (body.asset or "equity").strip().lower()
+    if asset not in MARKET_DATA_CATEGORIES:
+        return {"ok": False, "detail": f"unknown asset class '{asset}'"}
+    source = (body.source or get_depth_source(asset)).strip().lower()
+    auto_note = ""
+    if source == "auto":  # test what auto resolves to right now, and say so in the result
+        source = get_depth_source_resolved(asset)
+        auto_note = "auto → "
+    if source in ("", "none"):
+        return {"ok": False, "detail": "depth is off for this asset class"}
+    if asset == "crypto" and source == "exchange":
+        return {"ok": True, "detail": f"{auto_note}crypto uses the live {get_market_data_config()['exchange']} L2 book"}
+    try:
+        from app.services.depth import build_depth_source, latest_mid, synthetic_book_frame
+
+        mgr = build_depth_source(source)
+        if mgr is None:
+            return {"ok": False, "detail": f"{auto_note}depth source '{source}' is not installed"}
+        if not mgr.enabled(asset):
+            return {"ok": False, "detail": f"{auto_note}{source}: not configured for {asset}"}
+        sym = get_default_symbol(asset)
+        mid = latest_mid(asset, sym)
+        if mid is None:
+            return {"ok": False, "detail": f"{auto_note}{source}: no mid for {sym} (market closed / unknown symbol?)"}
+        levels = len(synthetic_book_frame(mid)["bids"]) if source == "sim" else 0
+        detail = f"{auto_note}{source} · {asset} {sym} mid {mid:.4f}"
+        return {"ok": True, "detail": f"{detail} · {levels} levels/side" if levels else detail}
+    except Exception as e:  # noqa: BLE001 - surface the probe error to the UI
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+@router.post("/market-data/test-options")
+def test_options_source(body: OptionsTestIn) -> dict:
+    """Probe the options-chain source: confirm it's configured and returns a chain for a symbol."""
+    source = (body.source or get_options_source()).strip().lower()
+    if source in ("", "none"):
+        return {"ok": False, "detail": "options source is off"}
+    underlying = (body.underlying or get_options_default_underlying()).strip().upper()
+    try:
+        from app.services.options import build_options_source
+
+        src = build_options_source(source)
+        if src is None:
+            return {"ok": False, "detail": f"options source '{source}' is not installed"}
+        if not src.enabled():
+            return {"ok": False, "detail": f"{source}: not configured"}
+        exps = src.expirations(underlying)
+        if not exps:
+            return {"ok": False, "detail": f"{source}: no chain for {underlying} (market closed / unknown symbol?)"}
+        rows = src.chain(underlying, exps[0])
+        return {"ok": True,
+                "detail": f"{source} · {underlying} · {len(exps)} expiries · {len(rows)} contracts @ {exps[0]}"}
+    except Exception as e:  # noqa: BLE001 - surface the probe error to the UI
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 @router.post("/market-data/clear-cache")
 def clear_market_data_cache() -> dict:
     """Drop the transient intraday cache + rebuild the data manager (forces fresh fetches)."""
@@ -530,4 +642,104 @@ async def test_mcp(body: McpServerIn) -> dict:
         "ok": bool(tools),
         "detail": f"{len(tools)} tool(s)" if tools else "no tools (unreachable or empty)",
         "tools": [{"name": t["tool"], "description": t["description"]} for t in tools],
+    }
+
+
+# ── Market-data vendor providers (depth/options credentials) ─────────────────────────
+# Databento / Polygon / Tradier / dxFeed / IBKR keys were previously env-var only; this lets the UI
+# enter them (stored encrypted via config's provider store). After a save the depth/options managers
+# are reloaded so the new creds take effect live. The GET view never leaks a secret.
+class ProviderIn(BaseModel):
+    name: str = ""            # databento | polygon | tradier | dxfeed | ibkr
+    api_key: str = ""         # databento / polygon (blank keeps saved)
+    token: str = ""           # tradier (blank keeps saved)
+    address: str = ""         # dxfeed (blank keeps saved)
+    env: str = ""             # tradier: "live" | "sandbox"
+    host: str = ""            # ibkr
+    port: str = ""            # ibkr
+
+
+@router.get("/providers")
+def get_providers() -> dict:
+    """Saved vendor-provider status (has_key / from_env / non-secret fields) — never leaks a secret."""
+    from app.config import provider_state
+
+    return {"providers": provider_state()}
+
+
+@router.put("/providers")
+def put_provider(body: ProviderIn) -> dict:
+    """Persist one provider's creds/settings, then hot-reload the depth/options managers."""
+    from app.config import provider_state, set_provider_config
+
+    fields = {k: v for k, v in body.model_dump().items() if k != "name"}
+    try:
+        set_provider_config(body.name, fields)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    reload_market_data()
+    return {"providers": provider_state()}
+
+
+@router.delete("/providers/{name}")
+def delete_provider(name: str) -> dict:
+    """Remove a provider's saved creds entirely, then hot-reload the depth/options managers."""
+    from app.config import clear_provider_secret, provider_state
+
+    clear_provider_secret(name)
+    reload_market_data()
+    return {"providers": provider_state()}
+
+
+# ── Filesystem browse (in-app directory picker for the Settings dir fields) ───────────
+@router.get("/fs/list")
+def fs_list(path: str = "") -> dict:
+    """List the sub-directories of a path, for the in-app folder picker.
+
+    Directories only — never file contents. An empty/unknown/denied path falls back to the home dir
+    (with an ``error`` note). This is a localhost-only personal app; the backend already reads/writes
+    the filesystem freely, so listing directory names here is acceptable.
+    """
+    import os
+    from pathlib import Path
+
+    term = get_terminal_settings()
+    # quick-jump roots the UI offers (dedup, keep order)
+    roots: list[str] = []
+    for r in (str(Path.home()), os.getcwd(), str(term.data_dir)):
+        if r not in roots:
+            roots.append(r)
+
+    raw = (path or "").strip()
+    error = ""
+    try:
+        target = (Path(raw).expanduser() if raw else Path.home()).resolve()
+    except (OSError, RuntimeError, ValueError):
+        target = Path.home()
+    if not target.exists() or not target.is_dir():
+        if raw:
+            error = f"not a directory: {target}"
+        target = Path.home()
+
+    entries: list[dict] = []
+    try:
+        for e in sorted(os.scandir(target), key=lambda x: x.name.lower()):
+            if e.name.startswith("."):
+                continue  # hide dotfiles/dirs
+            try:
+                if e.is_dir():
+                    entries.append({"name": e.name, "is_dir": True})
+            except OSError:
+                continue
+    except (PermissionError, OSError) as ex:
+        error = f"{type(ex).__name__}: {ex}"
+
+    parent = str(target.parent) if target.parent != target else ""
+    return {
+        "path": str(target),
+        "parent": parent,
+        "sep": os.sep,
+        "entries": entries,
+        "roots": roots,
+        "error": error,
     }

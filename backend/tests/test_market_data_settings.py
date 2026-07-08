@@ -16,6 +16,18 @@ from fastapi.testclient import TestClient
 from app import config
 from app import deps
 from app.main import app
+from app.services import autopick
+
+
+@pytest.fixture(autouse=True)
+def offline_autopick(monkeypatch):
+    """Pin every vendor probe to unavailable so 'auto' (the default) deterministically resolves
+    to 'sim' — otherwise a blanked config makes /api/health run REAL network probes (Databento
+    live gateway, IB Gateway TCP+handshake) and the assertions depend on machine/vendor state."""
+    monkeypatch.setattr(autopick, "_depth_candidate_ok", lambda source, asset: False)
+    autopick.invalidate()
+    yield
+    autopick.invalidate()
 
 
 @pytest.fixture()
@@ -96,9 +108,11 @@ def test_credentials_encrypted_at_rest(clean_override):
 # ── per-asset-class categories ─────────────────────────────────────────────────────
 def test_category_defaults_shape(clean_override):
     cats = config.get_market_data_config()["categories"]
-    assert set(cats) == set(config.MARKET_DATA_CATEGORIES)
+    # the OHLCV classes plus the standalone "options" chain subsystem (a category entry that is
+    # deliberately kept out of MARKET_DATA_CATEGORIES so the bars/depth loops never touch it)
+    assert set(cats) == set(config.MARKET_DATA_CATEGORIES) | {"options"}
     assert cats["equity"]["bars_source"] == "yfinance"
-    assert cats["equity"]["realtime_source"] == "alpaca"
+    assert cats["equity"]["realtime_source"] == "auto"   # auto = alpaca when creds exist
     assert cats["crypto"]["source"] in config.SUPPORTED_EXCHANGES
     assert cats["equity"]["default_symbol"] and cats["crypto"]["default_symbol"]
 
@@ -128,7 +142,7 @@ def test_categories_clamp_and_reject_bad_values(clean_override):
         "crypto": {"source": "not-an-exchange", "default_symbol": ""},
     })
     cats = config.get_market_data_config()["categories"]
-    assert cats["equity"]["realtime_source"] == "alpaca"      # bad source → default kept
+    assert cats["equity"]["realtime_source"] == "auto"        # bad source → default kept
     assert cats["equity"]["intraday_ttl"] == 600.0            # clamped
     assert cats["equity"]["history_years"] == 30              # clamped
     assert cats["crypto"]["source"] in config.SUPPORTED_EXCHANGES  # bad exchange → default kept
@@ -151,7 +165,8 @@ def test_legacy_flat_json_migrates_to_categories(clean_override, monkeypatch):
 def test_get_returns_categories_and_meta(clean_override):
     client = TestClient(app)
     body = client.get("/api/settings/market-data").json()
-    assert set(body["categories"]) == set(config.MARKET_DATA_CATEGORIES)
+    # OHLCV classes + the standalone "options" chain subsystem (see test_category_defaults_shape)
+    assert set(body["categories"]) == set(config.MARKET_DATA_CATEGORIES) | {"options"}
     meta = body["category_meta"]
     assert meta["equity"]["bars_sources"] == list(config.EQUITY_BARS_SOURCES)
     assert set(meta["crypto"]["sources"]) == set(config.SUPPORTED_EXCHANGES)
@@ -309,3 +324,98 @@ def test_clear_cache_endpoint(clean_override):
     client = TestClient(app)
     r = client.post("/api/settings/market-data/clear-cache")
     assert r.status_code == 200 and r.json()["ok"] is True
+
+
+# ── order-book depth source (per-class, pluggable) ──────────────────────────────────
+def test_depth_source_defaults(clean_override):
+    cats = config.get_market_data_config()["categories"]
+    # equity + all three FICC classes default to auto-pick; crypto keeps its real ccxt L2
+    assert cats["equity"]["depth_source"] == "auto"
+    assert {cats[c]["depth_source"] for c in config.FICC_CATEGORIES} == {"auto"}
+    assert cats["crypto"]["depth_source"] == "exchange"
+
+
+def test_depth_source_round_trip_and_reject(clean_override):
+    # exercises the NEW FICC-loop validation (previously no source field was validated there)
+    config.set_market_data_config(categories={
+        "equity": {"depth_source": "none"},
+        "rates": {"depth_source": "sim"},
+        "fx": {"depth_source": "bogus"},        # invalid → keeps the default 'sim'
+        "commodity": {"depth_source": "none"},
+        "crypto": {"depth_source": "sim"},      # crypto accepts 'sim' too
+    })
+    cats = config.get_market_data_config()["categories"]
+    assert cats["equity"]["depth_source"] == "none"
+    assert cats["rates"]["depth_source"] == "sim"
+    assert cats["fx"]["depth_source"] == "auto"       # bogus rejected → default kept
+    assert cats["commodity"]["depth_source"] == "none"
+    assert cats["crypto"]["depth_source"] == "sim"
+
+
+def test_depth_topic_token_and_enabled(clean_override):
+    config.set_market_data_config(categories={
+        "equity": {"depth_source": "sim"},
+        "rates": {"depth_source": "sim"},
+        "crypto": {"source": "kraken", "depth_source": "exchange", "realtime": True},
+    })
+    assert config.get_depth_topic_token("equity") == "sim.equity"
+    assert config.get_depth_topic_token("rates") == "sim.rates"
+    assert config.get_depth_topic_token("crypto") == "kraken"   # real ccxt path, no dot
+    assert config.get_depth_enabled("equity") is True
+    assert config.get_depth_enabled("crypto") is True
+    # turning a class off empties the token and disables it
+    config.set_market_data_config(categories={"equity": {"depth_source": "none"}})
+    assert config.get_depth_topic_token("equity") == ""
+    assert config.get_depth_enabled("equity") is False
+    # crypto depth follows the realtime toggle
+    config.set_market_data_config(categories={"crypto": {"depth_source": "exchange", "realtime": False}})
+    assert config.get_depth_enabled("crypto") is False
+
+
+def test_category_meta_has_depth_for_all_classes(clean_override):
+    client = TestClient(app)
+    meta = client.get("/api/settings/market-data").json()["category_meta"]
+    assert meta["equity"]["depth_sources"] == list(config.DEPTH_SOURCES)
+    for cat in config.FICC_CATEGORIES:
+        assert meta[cat]["depth_sources"] == list(config.DEPTH_SOURCES)
+    assert meta["crypto"]["depth_sources"] == list(config.CRYPTO_DEPTH_SOURCES)
+
+
+def test_state_and_health_expose_depth(clean_override):
+    client = TestClient(app)
+    config.set_market_data_config(categories={"equity": {"depth_source": "sim"}})
+    state = client.get("/api/settings/market-data").json()
+    assert state["depth"]["equity"] == {"source": "sim", "configured": "sim", "token": "sim.equity", "enabled": True}
+    health = client.get("/api/health").json()
+    assert health["depth"]["rates"]["token"] == "sim.rates"
+    # off → empty token, disabled
+    config.set_market_data_config(categories={"equity": {"depth_source": "none"}})
+    assert client.get("/api/health").json()["depth"]["equity"] == {
+        "source": "none", "configured": "none", "token": "", "enabled": False,
+    }
+
+
+def test_test_depth_endpoint_rejects_off(clean_override):
+    config.set_market_data_config(categories={"equity": {"depth_source": "none"}})
+    client = TestClient(app)
+    r = client.post("/api/settings/market-data/test-depth", json={"asset": "equity"})
+    assert r.status_code == 200 and r.json()["ok"] is False and "off" in r.json()["detail"]
+
+
+def test_test_depth_endpoint_ok_with_stubbed_mid(clean_override, monkeypatch):
+    # stub the mid resolver so the probe validates without touching the network
+    import app.services.depth as depth
+    monkeypatch.setattr(depth, "latest_mid", lambda asset, symbol: 123.45)
+    client = TestClient(app)
+    r = client.post("/api/settings/market-data/test-depth", json={"asset": "rates", "source": "sim"})
+    body = r.json()
+    assert body["ok"] is True and "levels/side" in body["detail"] and "123.45" in body["detail"]
+
+
+def test_reload_requests_depth_reset(clean_override):
+    from app.services.realtime import get_hub
+
+    hub = get_hub()
+    hub._depth_reset = False
+    deps.reload_market_data()
+    assert hub._depth_reset is True

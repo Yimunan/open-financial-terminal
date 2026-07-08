@@ -13,6 +13,7 @@ the process working directory.
 from __future__ import annotations
 
 import json
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -594,8 +595,39 @@ MARKET_DATA_CATEGORIES = ("equity", "crypto", "rates", "fx", "commodity")
 FICC_CATEGORIES = ("rates", "fx", "commodity")
 FICC_DEFAULT_SYMBOLS = {"rates": "ZN", "fx": "EUR/USD", "commodity": "GC"}
 EQUITY_BARS_SOURCES = ("yfinance",)            # the only real equity bar provider today
-EQUITY_REALTIME_SOURCES = ("alpaca", "none")   # Alpaca stream (needs creds) or off
+EQUITY_REALTIME_SOURCES = ("auto", "alpaca", "none")   # auto = alpaca when creds exist, else off
 DEFAULT_CRYPTO_EXCHANGE = "kraken"
+
+# Pluggable order-book (L2 depth) producers, vendor-agnostic. 'sim' = a local simulated feed
+# (always available, no creds — a modelled ladder around the real mid); 'none' = no depth. The real
+# vendors each plug in via one build_depth_source() branch + a producer module and are gated on
+# their SDK/creds (they report 'unavailable' until configured): 'ibkr' (ib_async reqMktDepth, needs
+# IB Gateway), 'databento' (Live MBP-10 API key), 'dxfeed' (dxLink token). Equity + the three FICC
+# classes share DEPTH_SOURCES; crypto keeps 'exchange' — its existing real ccxt.pro L2 — as default.
+# The 'auto' token picks the best *available* producer at read time (services/autopick.py):
+# ranked real vendors whose deep probe passes (IB Gateway reachable, Databento live-licensed),
+# else 'sim' — so adding a license/gateway upgrades the book with zero clicks.
+DEPTH_SOURCES = ("auto", "sim", "ibkr", "databento", "dxfeed", "none")
+CRYPTO_DEPTH_SOURCES = ("auto", "exchange", "sim", "none")
+DEFAULT_DEPTH_SOURCE = "auto"
+
+# Equity-options chain source (Settings → Market Data → Options). A standalone chain subsystem
+# (services/options.py), NOT a MARKET_DATA_CATEGORIES member — options are chain-shaped, not OHLCV.
+# 'yfinance' = free delayed chains + IV, greeks computed locally (Black-Scholes); real vendors plug
+# in via build_options_source() + a module, gated on SDK/creds ('unavailable' until configured).
+# OPTIONS_CAPS drives the Settings capability note + whether the widget shows source-provided greeks.
+OPTIONS_SOURCES = ("yfinance", "tradier", "polygon", "ibkr", "none")
+DEFAULT_OPTIONS_SOURCE = "yfinance"
+DEFAULT_OPTIONS_UNDERLYING = "AAPL"
+DEFAULT_OPTIONS_EXPIRY_WINDOW = 60    # days forward to list expirations
+DEFAULT_OPTIONS_CHAIN_TTL = 60.0      # seconds — chain cache lifetime
+OPTIONS_CAPS = {
+    "yfinance": {"chains": True, "iv": True, "greeks": False, "realtime": False},
+    "tradier": {"chains": True, "iv": True, "greeks": True, "realtime": True},
+    "polygon": {"chains": True, "iv": True, "greeks": True, "realtime": True},
+    "ibkr": {"chains": True, "iv": True, "greeks": True, "realtime": True},
+    "none": {"chains": False, "iv": False, "greeks": False, "realtime": False},
+}
 
 
 def _market_data_path() -> Path:
@@ -631,8 +663,9 @@ def _category_defaults() -> dict:
     return {
         "equity": {
             "bars_source": "yfinance",
-            "realtime_source": "alpaca",
+            "realtime_source": "auto",             # alpaca when creds exist, else off — no knob to forget
             "realtime_feed": DEFAULT_EQUITY_FEED,
+            "depth_source": DEFAULT_DEPTH_SOURCE,  # order-book (L2) producer — 'auto' picks best available
             "intraday_ttl": DEFAULT_INTRADAY_TTL,
             "history_years": DEFAULT_HISTORY_YEARS,
             "default_symbol": "AAPL",
@@ -640,19 +673,31 @@ def _category_defaults() -> dict:
         "crypto": {
             "source": ex,                          # ccxt exchange — drives bars + realtime
             "realtime": True,                      # live ticker/book/trades on; off keeps bars/charts
+            "depth_source": "exchange",            # 'exchange' = the real ccxt.pro L2 (unchanged default)
             "intraday_ttl": DEFAULT_INTRADAY_TTL,
             "history_years": DEFAULT_HISTORY_YEARS,
             "default_symbol": "BTC/USDT",
         },
-        # FICC classes share one simple shape (yfinance bars; no exchange/realtime knobs).
+        # FICC classes share one simple shape (yfinance bars; no exchange/realtime knobs, but a
+        # selectable order-book depth producer like equity).
         **{
             cat: {
                 "bars_source": "yfinance",
+                "depth_source": DEFAULT_DEPTH_SOURCE,
                 "intraday_ttl": DEFAULT_INTRADAY_TTL,
                 "history_years": DEFAULT_HISTORY_YEARS,
                 "default_symbol": FICC_DEFAULT_SYMBOLS[cat],
             }
             for cat in FICC_CATEGORIES
+        },
+        # Options: a standalone chain subsystem (not OHLCV) — a chain source + chain knobs. Kept out
+        # of MARKET_DATA_CATEGORIES so the bars/depth/_category loops never touch it.
+        "options": {
+            "source": DEFAULT_OPTIONS_SOURCE,
+            "default_underlying": DEFAULT_OPTIONS_UNDERLYING,
+            "expiry_window": DEFAULT_OPTIONS_EXPIRY_WINDOW,
+            "chain_ttl": DEFAULT_OPTIONS_CHAIN_TTL,
+            "greeks": "auto",   # 'auto' = compute via Black-Scholes when the source lacks greeks
         },
     }
 
@@ -670,6 +715,8 @@ def _overlay_categories(cats: dict, saved: object) -> None:
             eq["realtime_source"] = str(se["realtime_source"]).strip().lower()
         if str(se.get("realtime_feed") or "").strip().lower() in SUPPORTED_EQUITY_FEEDS:
             eq["realtime_feed"] = str(se["realtime_feed"]).strip().lower()
+        if str(se.get("depth_source") or "").strip().lower() in DEPTH_SOURCES:
+            eq["depth_source"] = str(se["depth_source"]).strip().lower()
         if "intraday_ttl" in se:
             eq["intraday_ttl"] = _clamp_ttl(se["intraday_ttl"])
         if "history_years" in se:
@@ -680,6 +727,8 @@ def _overlay_categories(cats: dict, saved: object) -> None:
     if isinstance(sc, dict):
         if str(sc.get("source") or "").strip().lower() in SUPPORTED_EXCHANGES:
             cr["source"] = str(sc["source"]).strip().lower()
+        if str(sc.get("depth_source") or "").strip().lower() in CRYPTO_DEPTH_SOURCES:
+            cr["depth_source"] = str(sc["depth_source"]).strip().lower()
         if "realtime" in sc:
             cr["realtime"] = bool(sc["realtime"])
         if "intraday_ttl" in sc:
@@ -688,18 +737,37 @@ def _overlay_categories(cats: dict, saved: object) -> None:
             cr["history_years"] = _clamp_history_years(sc["history_years"])
         if "default_symbol" in sc:
             cr["default_symbol"] = _clamp_symbol(sc["default_symbol"], cr["default_symbol"])
-    # FICC categories: only history / cache TTL / default symbol are configurable.
+    # FICC categories: history / cache TTL / default symbol + a selectable depth (order-book) source.
     for cat in FICC_CATEGORIES:
         sf = saved.get(cat)
         if not isinstance(sf, dict) or cat not in cats:
             continue
         rec = cats[cat]
+        if str(sf.get("depth_source") or "").strip().lower() in DEPTH_SOURCES:
+            rec["depth_source"] = str(sf["depth_source"]).strip().lower()
         if "intraday_ttl" in sf:
             rec["intraday_ttl"] = _clamp_ttl(sf["intraday_ttl"])
         if "history_years" in sf:
             rec["history_years"] = _clamp_history_years(sf["history_years"])
         if "default_symbol" in sf:
             rec["default_symbol"] = _clamp_symbol(sf["default_symbol"], rec["default_symbol"])
+    # Options (standalone chain subsystem): source + chain knobs.
+    so = saved.get("options")
+    if isinstance(so, dict) and "options" in cats:
+        opt = cats["options"]
+        if str(so.get("source") or "").strip().lower() in OPTIONS_SOURCES:
+            opt["source"] = str(so["source"]).strip().lower()
+        if "default_underlying" in so:
+            opt["default_underlying"] = _clamp_symbol(so["default_underlying"], opt["default_underlying"])
+        if "expiry_window" in so:
+            try:
+                opt["expiry_window"] = max(7, min(365, int(so["expiry_window"])))
+            except (TypeError, ValueError):
+                pass
+        if "chain_ttl" in so:
+            opt["chain_ttl"] = _clamp_ttl(so["chain_ttl"], DEFAULT_OPTIONS_CHAIN_TTL)
+        if str(so.get("greeks") or "").strip().lower() in ("auto", "passthrough", "off"):
+            opt["greeks"] = str(so["greeks"]).strip().lower()
 
 
 def _merge_saved(cats: dict, data: dict) -> None:
@@ -835,6 +903,146 @@ def clear_alpaca_creds() -> dict:
     return get_market_data_config()
 
 
+# ── Market-data vendor providers (Databento / Polygon / Tradier / dxFeed / IBKR) ─────
+# Credentials for the optional depth/options vendors, entered in Settings → Data Providers and stored
+# encrypted in <data_dir>/providers.json (the same at-rest scheme as the Alpaca keys). The vendor
+# service modules read these first, then fall back to their historical env vars, so an existing
+# env-based setup keeps working and the UI is purely additive. The status view (provider_state) never
+# leaks a secret — only whether one is saved (has_key) — mirroring _state()/get_market_data_config().
+#
+# Each provider lists its secret fields (encrypted at rest, blank-on-save keeps the saved value) and
+# its plain fields (IBKR host/port, Tradier env — stored/echoed in the clear). IBKR client-ids stay
+# in code (depth=17, options=18) so the two connections never collide; the UI sets only host/port.
+PROVIDER_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "databento": {"secret": ("api_key",), "plain": ()},
+    "polygon": {"secret": ("api_key",), "plain": ()},
+    "tradier": {"secret": ("token",), "plain": ("env",)},
+    "dxfeed": {"secret": ("address",), "plain": ()},
+    "ibkr": {"secret": (), "plain": ("host", "port")},
+}
+# env-var fallbacks per provider — used only to tell the UI a value is set outside the app.
+_PROVIDER_ENV: dict[str, tuple[str, ...]] = {
+    "databento": ("DATABENTO_API_KEY", "OFT_DATABENTO_API_KEY"),
+    "polygon": ("POLYGON_API_KEY", "OFT_POLYGON_API_KEY"),
+    "tradier": ("TRADIER_TOKEN", "OFT_TRADIER_TOKEN"),
+    "dxfeed": ("OFT_DXFEED_ADDRESS",),
+    "ibkr": ("OFT_IBKR_HOST", "OFT_IBKR_PORT"),
+}
+
+
+def _providers_path() -> Path:
+    return get_terminal_settings().data_dir / "providers.json"
+
+
+def _read_providers_raw() -> dict:
+    p = _providers_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def get_provider_config() -> dict:
+    """All saved vendor-provider settings, secrets DECRYPTED for in-process use.
+
+    Shape: ``{<provider>: {<field>: <value>, ...}, ...}`` — only providers with a saved record and
+    only known fields (PROVIDER_FIELDS) appear; empty fields are dropped.
+    """
+    raw = _read_providers_raw()
+    out: dict[str, dict] = {}
+    for name, spec in PROVIDER_FIELDS.items():
+        rec = raw.get(name)
+        if not isinstance(rec, dict):
+            continue
+        clean: dict[str, str] = {}
+        for f in spec["secret"]:
+            if rec.get(f):
+                dec = decrypt_secret(str(rec[f]))
+                if dec:
+                    clean[f] = dec
+        for f in spec["plain"]:
+            if rec.get(f) not in (None, ""):
+                clean[f] = str(rec[f])
+        if clean:
+            out[name] = clean
+    return out
+
+
+def get_provider_secret(name: str, field: str) -> str:
+    """One saved provider field (decrypted), or "" when unset. The vendor services' fallback source."""
+    return get_provider_config().get(name, {}).get(field, "") or ""
+
+
+def set_provider_config(name: str, fields: dict) -> dict:
+    """Validate + persist one provider's settings (secret fields encrypted).
+
+    A blank secret keeps the previously saved value (so the UI can render it masked — the same trick
+    as set_llm_override / set_market_data_config). Plain fields overwrite with the submitted value.
+    Returns the decrypted get_provider_config(). Raises ValueError on an unknown provider name.
+    """
+    name = (name or "").strip().lower()
+    spec = PROVIDER_FIELDS.get(name)
+    if spec is None:
+        raise ValueError(f"unknown provider '{name}'")
+    raw = _read_providers_raw()
+    rec = dict(raw.get(name) or {})
+    for f in spec["secret"]:
+        if f in fields:
+            val = str(fields[f] or "").strip()
+            if val:  # blank keeps the previously saved secret
+                rec[f] = encrypt_secret(val)
+    for f in spec["plain"]:
+        if f in fields:
+            rec[f] = str(fields[f] or "").strip()
+    raw[name] = rec
+    p = _providers_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(raw), "utf-8")
+    return get_provider_config()
+
+
+def clear_provider_secret(name: str) -> dict:
+    """Remove a provider's saved record entirely (creds + settings). Returns get_provider_config()."""
+    name = (name or "").strip().lower()
+    raw = _read_providers_raw()
+    if name in raw:
+        del raw[name]
+        p = _providers_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(raw), "utf-8")
+    return get_provider_config()
+
+
+def provider_state() -> dict:
+    """Non-secret status view for Settings → Data Providers.
+
+    Never leaks a secret — only whether one is saved (``has_key``) and whether an env-var fallback is
+    currently present (``from_env``). Plain fields (IBKR host/port, Tradier env) are echoed so the UI
+    can show them.
+    """
+    cfg = get_provider_config()
+
+    def _env(name: str) -> bool:
+        return any((os.getenv(v) or "").strip() for v in _PROVIDER_ENV.get(name, ()))
+
+    dbt, pg, tr, dx, ib = (cfg.get(k, {}) for k in ("databento", "polygon", "tradier", "dxfeed", "ibkr"))
+    return {
+        "databento": {"has_key": bool(dbt.get("api_key")), "from_env": _env("databento")},
+        "polygon": {"has_key": bool(pg.get("api_key")), "from_env": _env("polygon")},
+        "tradier": {"has_key": bool(tr.get("token")), "env": tr.get("env", ""), "from_env": _env("tradier")},
+        "dxfeed": {"has_key": bool(dx.get("address")), "from_env": _env("dxfeed")},
+        "ibkr": {
+            "host": ib.get("host", ""),
+            "port": ib.get("port", ""),
+            "configured": bool(ib.get("host") or ib.get("port")),
+            "from_env": _env("ibkr"),
+        },
+    }
+
+
 def _category(asset: str) -> dict:
     """The resolved record for an asset class, falling back to equity for unknown classes."""
     cats = get_market_data_config()["categories"]
@@ -868,9 +1076,22 @@ def get_bars_source(asset: str = "equity") -> str:
 
 
 def get_realtime_source(asset: str = "equity") -> str:
-    """The realtime data source for an asset class ('alpaca'/'none' for equity, exchange for crypto)."""
+    """The *configured* realtime source ('auto'/'alpaca'/'none' for equity, exchange for crypto)."""
     cat = _category(asset)
     return cat.get("realtime_source", cat.get("source", "none"))
+
+
+def get_equity_realtime_resolved() -> str:
+    """The concrete equity realtime source after resolving 'auto' ('alpaca' with creds, else 'none')."""
+    src = get_realtime_source("equity")
+    if src != "auto":
+        return src
+    return "alpaca" if get_alpaca_creds()[0] else "none"
+
+
+def equity_realtime_enabled() -> bool:
+    """Whether the live equity stream should run: an (auto-)resolved Alpaca source AND creds."""
+    return get_equity_realtime_resolved() == "alpaca" and bool(get_alpaca_creds()[0])
 
 
 def get_crypto_realtime_enabled() -> bool:
@@ -887,3 +1108,178 @@ def get_alpaca_creds() -> tuple[str, str, bool]:
 def get_equity_feed() -> str:
     """Alpaca equity real-time feed, 'iex' or 'sip' (override → else default)."""
     return get_market_data_config()["categories"]["equity"]["realtime_feed"]
+
+
+def get_depth_source(asset: str = "equity") -> str:
+    """The *configured* order-book (L2) depth producer ('auto'/'sim'/'exchange'/'none'/vendor id)."""
+    return _category(asset).get("depth_source", "none")
+
+
+def get_depth_source_resolved(asset: str = "equity") -> str:
+    """The concrete depth producer after resolving 'auto' (services/autopick ranking + probes)."""
+    src = get_depth_source(asset)
+    if src != "auto":
+        return src
+    from app.services.autopick import resolve_depth_source  # lazy: keep config import-light
+
+    return resolve_depth_source(asset)
+
+
+def get_depth_topic_token(asset: str = "equity") -> str:
+    """The realtime-hub 'exchange' segment for this asset's ``book:`` topic, '' when depth is off.
+
+    Crypto with the 'exchange' source keeps its existing real ccxt.pro path — the token is just the
+    ccxt exchange id (e.g. 'kraken', no dot → routed to the ccxt watch loop). Every other producer
+    encodes vendor + asset as ``{source}.{asset}`` (e.g. 'sim.equity') so the hub can pick the right
+    mid provider and symbol mapping. The frontend never builds this — it reads it from /api/health.
+    """
+    return _depth_token_for(asset, get_depth_source_resolved(asset))
+
+
+def _depth_token_for(asset: str, src: str) -> str:
+    """Derive the ``book:`` topic token from an already-resolved source (shared by depth_status)."""
+    if not src or src == "none":
+        return ""
+    if asset == "crypto" and src == "exchange":
+        return get_crypto_exchange()
+    return f"{src}.{asset}"
+
+
+def get_depth_enabled(asset: str = "equity") -> bool:
+    """Whether order-book depth is available for an asset class right now.
+
+    'none' → off. Crypto real L2 honors the crypto realtime toggle (so 'Realtime: off' also stops
+    the book). 'sim' is always available. 'auto' resolves first, so a vendor it picked has already
+    passed its availability probe; a pinned vendor still reports enabled and surfaces its own
+    status frames when misconfigured.
+    """
+    return _depth_enabled_for(asset, get_depth_source_resolved(asset))
+
+
+def _depth_enabled_for(asset: str, src: str) -> bool:
+    """Derive availability from an already-resolved source (shared by depth_status)."""
+    if not src or src == "none":
+        return False
+    if asset == "crypto" and src == "exchange":
+        return get_crypto_realtime_enabled()
+    return True
+
+
+def depth_status(asset: str = "equity") -> dict:
+    """One consistent depth-status record: ``{source, configured, token, enabled}``.
+
+    Resolves 'auto' exactly ONCE and derives token/enabled from that same answer — the health and
+    settings status blocks previously resolved three times per asset, so a probe-cache expiry (or
+    a concurrent ``autopick.invalidate()``) between calls could pair one source with another
+    source's token. Also 3× cheaper on a cold probe cache.
+    """
+    configured = get_depth_source(asset)
+    src = get_depth_source_resolved(asset)
+    return {
+        "source": src,
+        "configured": configured,
+        "token": _depth_token_for(asset, src),
+        "enabled": _depth_enabled_for(asset, src),
+    }
+
+
+# Pluggable time-&-sales (trade prints) producers for asset classes with no free real tape. 'sim' =
+# a local simulated feed (modelled prints around the real mid, always available). Real vendors plug
+# in via one build_trades_source() branch + a producer module (gated on SDK/creds), mirroring
+# DEPTH_SOURCES. Crypto keeps 'exchange' (real ccxt.pro tape) and equity keeps 'alpaca' — both real.
+TRADES_SOURCES = ("sim", "ibkr", "databento")
+DEFAULT_TRADES_SOURCE = "sim"
+# The equity tape token — must match services/realtime.EQUITY_SOURCE (kept a literal to avoid a
+# config→realtime import cycle).
+_EQUITY_TRADES_TOKEN = "alpaca"
+
+
+def get_trades_source(asset: str = "equity") -> str:
+    """The time-&-sales (tape) producer id for an asset class.
+
+    Fixed per-class policy (not a user choice, unlike depth): crypto uses its real ccxt.pro tape
+    ('exchange'), equity uses the Alpaca tape ('alpaca'), and the FICC classes — which have no free
+    print feed — use the pluggable simulated source ('sim'). Unknown classes → 'none'.
+    """
+    a = (asset or "equity").lower()
+    if a == "crypto":
+        return "exchange"
+    if a == "equity":
+        return _EQUITY_TRADES_TOKEN
+    if a in FICC_CATEGORIES:
+        return DEFAULT_TRADES_SOURCE
+    return "none"
+
+
+def get_trades_enabled(asset: str = "equity") -> bool:
+    """Whether a live time-&-sales tape is available for an asset class right now.
+
+    Crypto honors the crypto-realtime toggle; equity needs an (auto-)resolved 'alpaca' realtime
+    source + creds — the SAME gate as ``equity_stream`` on /api/health, so a configured 'auto'
+    lights the tape exactly when it lights the stream. The simulated FICC tape is always available.
+    """
+    a = (asset or "equity").lower()
+    if a == "crypto":
+        return get_crypto_realtime_enabled()
+    if a == "equity":
+        return equity_realtime_enabled()
+    if a in FICC_CATEGORIES:
+        return True
+    return False
+
+
+def get_trades_topic_token(asset: str = "equity") -> str:
+    """The realtime-hub 'exchange' segment for this asset's ``trades:`` topic, '' when unavailable.
+
+    Crypto keeps its real ccxt.pro tape (token = the ccxt exchange id, no dot → the ccxt watch loop).
+    Equity keeps the Alpaca tape (token = 'alpaca', no dot → the Alpaca stream). Simulated/vendor
+    producers encode source + asset as ``{source}.{asset}`` (e.g. 'sim.rates') so the hub picks the
+    right mid provider + symbol mapping. Empty when the tape is off. The frontend never builds this —
+    it reads it from /api/health (mirrors get_depth_topic_token).
+    """
+    if not get_trades_enabled(asset):
+        return ""
+    a = (asset or "equity").lower()
+    src = get_trades_source(a)
+    if a == "crypto" and src == "exchange":
+        return get_crypto_exchange()
+    if a == "equity" and src == _EQUITY_TRADES_TOKEN:
+        return _EQUITY_TRADES_TOKEN
+    return f"{src}.{a}"
+
+
+def _options_cfg() -> dict:
+    """The options-chain config record (standalone; not a MARKET_DATA_CATEGORIES member)."""
+    return get_market_data_config()["categories"].get("options", {})
+
+
+def get_options_source() -> str:
+    """The active options-chain source id ('yfinance'/'tradier'/'polygon'/'ibkr'/'none')."""
+    return _options_cfg().get("source", DEFAULT_OPTIONS_SOURCE)
+
+
+def get_options_enabled() -> bool:
+    """Whether an options-chain source is selected (not 'none')."""
+    src = get_options_source()
+    return bool(src) and src != "none"
+
+
+def get_options_caps(source: str | None = None) -> dict:
+    """Capability map (chains/iv/greeks/realtime) for a source (default: the active one)."""
+    return OPTIONS_CAPS.get(source or get_options_source(), OPTIONS_CAPS["none"])
+
+
+def get_options_default_underlying() -> str:
+    return _options_cfg().get("default_underlying", DEFAULT_OPTIONS_UNDERLYING)
+
+
+def get_options_expiry_window() -> int:
+    return int(_options_cfg().get("expiry_window", DEFAULT_OPTIONS_EXPIRY_WINDOW))
+
+
+def get_options_chain_ttl() -> float:
+    return float(_options_cfg().get("chain_ttl", DEFAULT_OPTIONS_CHAIN_TTL))
+
+
+def get_options_greeks_mode() -> str:
+    return _options_cfg().get("greeks", "auto")

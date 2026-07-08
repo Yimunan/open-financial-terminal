@@ -27,17 +27,23 @@
     OFT_SIGN_TIMESTAMP   — RFC3161 timestamp URL (default: http://timestamp.digicert.com)
   Without a configured cert, signing is skipped with a warning (build still succeeds).
 
+.PARAMETER Version
+  Installer version (passed to Inno Setup as /DAppVersion). Omit to use the default
+  #define AppVersion in packaging\oft-installer.iss.
+
 .EXAMPLE
   pwsh scripts\build_desktop.ps1                 # release windowed app
   pwsh scripts\build_desktop.ps1 -Console        # debuggable build
   pwsh scripts\build_desktop.ps1 -Qhfi -Installer
+  pwsh scripts\build_desktop.ps1 -Installer -Version 1.0.3
   $env:OFT_SIGN_THUMBPRINT='...'; pwsh scripts\build_desktop.ps1 -Installer -Sign
 #>
 param(
   [switch]$Console,
   [switch]$Qhfi,
   [switch]$Installer,
-  [switch]$Sign
+  [switch]$Sign,
+  [string]$Version
 )
 $ErrorActionPreference = "Stop"
 
@@ -47,6 +53,10 @@ $Frontend  = Join-Path $Root "frontend"
 $Venv      = Join-Path $Backend ".venv\Scripts"
 $PyInst    = Join-Path $Venv "pyinstaller.exe"
 $Qhfime    = Join-Path (Split-Path -Parent $Root) "quant-hedge-fund-incubator"
+if (-not (Test-Path $Qhfime)) {
+  # standalone clone: the engine is vendored inside the repo
+  $Qhfime = Join-Path $Root "quant-hedge-fund-incubator"
+}
 
 function Invoke-Sign($path) {
   # Authenticode-sign one file when -Sign is set and a cert is configured; otherwise a safe no-op.
@@ -69,7 +79,10 @@ function Invoke-Sign($path) {
 
 Write-Host "==> [1/4] Building frontend (npm run build)" -ForegroundColor Cyan
 Push-Location $Frontend
-try { npm run build } finally { Pop-Location }
+try {
+  npm run build
+  if ($LASTEXITCODE -ne 0) { throw "npm run build failed (tsc/vite): $LASTEXITCODE" }
+} finally { Pop-Location }
 
 Write-Host "==> [2/4] Freezing backend (PyInstaller)" -ForegroundColor Cyan
 if ($Console) { $env:OFT_CONSOLE = "1" } else { Remove-Item Env:\OFT_CONSOLE -ErrorAction SilentlyContinue }
@@ -108,9 +121,15 @@ if ($Installer) {
   ) | Where-Object { Test-Path $_ } | Select-Object -First 1
   if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
   if (-not $iscc) { throw "Inno Setup not found. Install it: winget install JRSoftware.InnoSetup" }
-  & $iscc (Join-Path $Root "packaging\oft-installer.iss")
+  $isccArgs = @()
+  if ($Version) { $isccArgs += "/DAppVersion=$Version" }
+  $isccArgs += (Join-Path $Root "packaging\oft-installer.iss")
+  & $iscc @isccArgs
   if ($LASTEXITCODE -ne 0) { throw "ISCC failed: $LASTEXITCODE" }
-  Invoke-Sign (Join-Path $Root "packaging\dist_installer\OpenFinancialTerminal-Setup-2.0.0.exe")
+  $setup = Get-ChildItem (Join-Path $Root "packaging\dist_installer") -Filter "OpenFinancialTerminal-Setup-*.exe" |
+           Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (-not $setup) { throw "Inno Setup produced no OpenFinancialTerminal-Setup-*.exe in packaging\dist_installer" }
+  Invoke-Sign $setup.FullName
   Write-Host "    -> $Root\packaging\dist_installer\" -ForegroundColor Green
 } else {
   Write-Host "==> [4/4] Skipping installer (pass -Installer to compile it)" -ForegroundColor DarkGray

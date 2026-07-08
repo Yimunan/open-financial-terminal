@@ -50,7 +50,16 @@ type AddOpts = {
 };
 type AddPanel = (type: WidgetType, opts?: AddOpts) => ReturnType<DockviewApi["addPanel"]>;
 
-const LEFT_WIDTH = 340;
+// Space budget for templates. Widgets aren't equal: charts/analytics are the "hero" and should own
+// the middle; watchlists/boards/libraries are narrow rails; and time & sales, quotes and order books
+// are compact strips that only need a slice of height (a full-height tape wastes the desk — the
+// hero chart should tower over it). We only constrain the small ones (rail width, side width, strip
+// heights); the hero fills whatever remains, so it stays the biggest panel at any window size.
+const COL_RAIL = 300;   // narrow left rail: watchlists, market boards, libraries
+const COL_WIDE_RAIL = 360; // a rail that carries tables (profile fundamentals, portfolio holdings)
+const COL_SIDE = 440;   // secondary right column; the hero column fills the middle
+const H_STRIP = 220;    // compact strip: time & sales, quote, a secondary feed under a taller panel
+const H_BOOK = 300;     // order book / depth ladder — a touch taller than a strip
 
 export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
   {
@@ -64,7 +73,7 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red", timeframe: "1m", chartType: "candles" },
         position: { referencePanel: watchlist.id, direction: "right" },
       });
-      add("timesales", {
+      const timesales = add("timesales", {
         params: { channel: "red" },
         position: { referencePanel: chart.id, direction: "below" },
       });
@@ -76,7 +85,9 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red" },
         position: { referencePanel: quote.id, direction: "below" },
       });
-      watchlist.api.setSize({ width: LEFT_WIDTH });
+      watchlist.api.setSize({ width: COL_RAIL });
+      quote.api.setSize({ width: COL_SIDE, height: H_STRIP }); // quote is a compact strip; news fills below
+      timesales.api.setSize({ height: H_STRIP });              // tape strip under a towering chart
     }),
   },
   {
@@ -90,7 +101,7 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "blue", asset: "crypto", timeframe: "1m", chartType: "candles" },
         position: { referencePanel: watchlist.id, direction: "right" },
       });
-      add("timesales", {
+      const timesales = add("timesales", {
         params: { channel: "blue" },
         position: { referencePanel: chart.id, direction: "below" },
       });
@@ -98,11 +109,14 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "blue" },
         position: { referencePanel: chart.id, direction: "right" },
       });
-      add("market_making", {
+      const mm = add("market_making", {
         params: { channel: "blue" },
         position: { referencePanel: orderbook.id, direction: "below" },
       });
-      watchlist.api.setSize({ width: LEFT_WIDTH });
+      watchlist.api.setSize({ width: COL_RAIL });
+      orderbook.api.setSize({ width: COL_SIDE, height: H_BOOK }); // book gets the ladder height it needs
+      timesales.api.setSize({ height: H_STRIP });                 // tape strip; chart towers above
+      mm.api.setSize({ height: H_STRIP });                        // market-making tucks under the book
     }),
   },
   {
@@ -116,7 +130,7 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red", timeframe: "1d", chartType: "candles" },
         position: { referencePanel: profile.id, direction: "right" },
       });
-      add("filings", {
+      const filings = add("filings", {
         params: { channel: "red" },
         position: { referencePanel: chart.id, direction: "below" },
       });
@@ -124,7 +138,7 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red" },
         position: { referencePanel: chart.id, direction: "right" },
       });
-      add("committee", {
+      const committee = add("committee", {
         params: { channel: "red" },
         position: { referencePanel: news.id, direction: "below" },
       });
@@ -132,7 +146,10 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red" },
         position: { referencePanel: news.id, direction: "below" },
       });
-      profile.api.setSize({ width: LEFT_WIDTH });
+      profile.api.setSize({ width: COL_WIDE_RAIL });           // fundamentals tables need room
+      news.api.setSize({ width: COL_SIDE, height: H_STRIP });  // news + committee are strips…
+      committee.api.setSize({ height: H_STRIP });              // …so the assistant chat fills the rest
+      filings.api.setSize({ height: H_STRIP });                // filings strip; the 1d chart dominates
     }),
   },
   {
@@ -151,11 +168,14 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red" },
         position: { referencePanel: monitor.id, direction: "right" },
       });
-      add("strategies", {
+      const strategies = add("strategies", {
         params: { channel: "red" },
         position: { referencePanel: sandbox.id, direction: "below" },
       });
-      factors.api.setSize({ width: LEFT_WIDTH });
+      factors.api.setSize({ width: COL_RAIL });
+      sandbox.api.setSize({ width: COL_SIDE });     // sandbox editor gets a proper column
+      monitor.api.setSize({ height: H_STRIP });     // perf strip; the backtest run fills below it
+      strategies.api.setSize({ height: H_STRIP });  // strategies list tucks under the sandbox
     }),
   },
   {
@@ -167,18 +187,21 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
       const risk = add("risk_attribution", {
         position: { referencePanel: portfolio.id, direction: "right" },
       });
-      add("metrics", {
+      const metrics = add("metrics", {
         params: { channel: "red" },
         position: { referencePanel: risk.id, direction: "below" },
       });
       const portfolios = add("portfolios", {
         position: { referencePanel: risk.id, direction: "right" },
       });
-      add("paper", {
+      const paper = add("paper", {
         params: { channel: "red" },
         position: { referencePanel: portfolios.id, direction: "below" },
       });
-      portfolio.api.setSize({ width: LEFT_WIDTH });
+      portfolio.api.setSize({ width: COL_WIDE_RAIL });         // holdings table needs room
+      portfolios.api.setSize({ width: COL_SIDE });
+      metrics.api.setSize({ height: H_STRIP });                // metrics strip; risk charts dominate
+      paper.api.setSize({ height: H_STRIP });                  // paper ticket tucks under the builder
     }),
   },
   {
@@ -190,7 +213,7 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
       const macro = add("macro", {
         position: { referencePanel: board.id, direction: "right" },
       });
-      add("topicnews", {
+      const macronews = add("topicnews", {
         title: "Macro News",
         params: { channel: "none", category: "macro", label: "Macro" },
         position: { referencePanel: macro.id, direction: "below" },
@@ -199,12 +222,15 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red" },
         position: { referencePanel: macro.id, direction: "right" },
       });
-      add("topicnews", {
+      const marketnews = add("topicnews", {
         title: "Market News",
         params: { channel: "none", category: "market", label: "Market" },
         position: { referencePanel: listings.id, direction: "below" },
       });
-      board.api.setSize({ width: LEFT_WIDTH });
+      board.api.setSize({ width: COL_RAIL });
+      listings.api.setSize({ width: COL_SIDE });
+      macronews.api.setSize({ height: H_STRIP });   // news strip; macro charts dominate the middle
+      marketnews.api.setSize({ height: H_STRIP });  // news strip; new-listings feed sits above it
     }),
   },
   {
@@ -218,8 +244,10 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red", timeframe: "5m", chartType: "candles" },
         position: { referencePanel: algo.id, direction: "right" },
       });
-      add("orderbook", {
-        params: { channel: "blue" },
+      const orderbook = add("orderbook", {
+        // Red like the rest of this desk, so the book follows the algo/chart symbol (was an
+        // orphaned blue book that tracked nothing selected in this layout).
+        params: { channel: "red" },
         position: { referencePanel: chart.id, direction: "below" },
       });
       const paper = add("paper", {
@@ -230,7 +258,9 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         params: { channel: "red" },
         position: { referencePanel: paper.id, direction: "below" },
       });
-      algo.api.setSize({ width: LEFT_WIDTH });
+      algo.api.setSize({ width: COL_WIDE_RAIL });   // algo config + status column
+      paper.api.setSize({ width: COL_SIDE });
+      orderbook.api.setSize({ height: H_BOOK });    // book strip under the 5m chart, which dominates
     }),
   },
 ];

@@ -192,7 +192,7 @@ export default function ResearchLoopWidget(props: WidgetProps) {
   const [goal, setGoal] = useState<string>(
     (props.params.initialQuery as string) ?? "Find a robust long-short factor strategy that passes the promotion scorecard",
   );
-  const [maxIters, setMaxIters] = useState(5);
+  const [maxIters, setMaxIters] = useState(2);
   const [running, setRunning] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [iters, setIters] = useState<IterState[]>([]);

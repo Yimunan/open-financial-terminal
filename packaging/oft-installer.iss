@@ -14,7 +14,10 @@
 ; run_desktop.py), so it installs cleanly under Program Files with no write-back to its own dir.
 
 #define AppName "Open Financial Terminal"
-#define AppVersion "2.0.0"
+; Overridable from the command line: ISCC.exe /DAppVersion=1.0.3 oft-installer.iss
+#ifndef AppVersion
+  #define AppVersion "1.0.3"
+#endif
 #define AppPublisher "Open Financial Terminal"
 #define AppExeName "oft-backend.exe"
 ; Path to the PyInstaller onedir output, relative to this .iss file (packaging/ is under the project root).

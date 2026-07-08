@@ -48,6 +48,11 @@ class SimBroker:
 
     # ── pricing ────────────────────────────────────────────────────────────────
     def last_price(self, symbol: str, asset: str = "equity") -> float | None:
+        if asset == "option":
+            # Options are priced off the chain service (per-contract $ = mark × 100), not qhfi bars.
+            from app.services.options import option_mark
+
+            return option_mark(symbol)
         try:
             _, bars = fetch_bars(self.dm, symbol, asset)
         except Exception:  # noqa: BLE001 - unknown/halted symbol

@@ -10,10 +10,13 @@ __pycache__/
 # Backend runtime state
 backend/data/
 backend/*.sqlite
+backend/*.sqlite.bak-*
 backend/.env
 
 # Logs
 *.log
+*.log.out
+backend/scripts/*.jsonl
 
 # Node / frontend
 node_modules/
@@ -23,6 +26,8 @@ frontend/.vite/
 # Desktop build artifacts (PyInstaller onedir + Inno Setup installer)
 backend/dist_desktop/
 backend/build_desktop/
+backend/dist-mac/
+backend/build-mac/
 packaging/dist_installer/
 
 # Icon-design iteration / preview images (not shipped)

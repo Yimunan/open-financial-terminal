@@ -6,9 +6,13 @@ $root = Split-Path -Parent $PSScriptRoot
 $backend = Join-Path $root "backend"
 $frontend = Join-Path $root "frontend"
 $qhfi = Join-Path (Split-Path -Parent $root) "quant-hedge-fund-incubator"
+if (-not (Test-Path $qhfi)) {
+    # standalone clone: the engine is vendored inside the repo
+    $qhfi = Join-Path $root "quant-hedge-fund-incubator"
+}
 
 if (-not (Test-Path $qhfi)) {
-    throw "qhfi engine not found at $qhfi. Clone quant-hedge-fund-incubator as a sibling directory."
+    throw "qhfi engine not found as a sibling of, or vendored inside, $root."
 }
 
 Write-Host "==> Creating backend venv" -ForegroundColor Cyan

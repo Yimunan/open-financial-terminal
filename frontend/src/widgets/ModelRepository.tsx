@@ -9,11 +9,14 @@ import RegistrySummary from "../components/RegistrySummary";
 import { IconButton, WidgetShell, useWidgetSymbol } from "./shell";
 
 type Tab = "bundles" | "trained";
-const STAGES = ["dev", "staging", "production", "archived"] as const;
+// Must match the backend ModelStage enum (draft|backtest|paper|production|archived) —
+// promote 400s on anything else.
+const STAGES = ["draft", "backtest", "paper", "production", "archived"] as const;
 const STAGE_CLS: Record<string, string> = {
   production: "bg-term-up/20 text-term-up",
-  staging: "bg-term-accent/20 text-term-accent",
-  dev: "bg-term-border/50 text-term-muted",
+  paper: "bg-term-accent/20 text-term-accent",
+  backtest: "bg-term-accent/10 text-term-accent",
+  draft: "bg-term-border/50 text-term-muted",
   archived: "bg-term-down/15 text-term-down",
 };
 

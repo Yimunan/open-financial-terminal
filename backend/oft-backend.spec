@@ -21,7 +21,9 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 
 SPECDIR = Path(SPECPATH).resolve()                       # .../Open Financial Terminal/backend
 PROJECT = SPECDIR.parent                                 # .../Open Financial Terminal
-QHFI = PROJECT.parent / "quant-hedge-fund-incubator"     # sibling engine repo
+QHFI = PROJECT.parent / "quant-hedge-fund-incubator"     # sibling engine repo (dev layout)
+if not QHFI.is_dir():
+    QHFI = PROJECT / "quant-hedge-fund-incubator"        # vendored in-repo copy (standalone clone)
 
 datas, binaries, hiddenimports = [], [], []
 
@@ -90,7 +92,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["rthook_env.py"],
     excludes=["tkinter", "PyQt5", "PyQt6", "PySide2", "PySide6"],  # matplotlib only needs Agg
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

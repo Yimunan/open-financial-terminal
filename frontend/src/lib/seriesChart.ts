@@ -18,7 +18,9 @@ export interface ChartSeries {
   points: SeriesPoint[];
   color: string;
   title?: string;
-  kind?: "line" | "area" | "histogram";
+  kind?: "line" | "area" | "histogram" | "scatter";
+  /** Marker fill for `kind:"scatter"` — filled dot (default) or hollow ring. */
+  marker?: "filled" | "hollow";
 }
 
 /** Options that change how the x-axis is interpreted/labelled.
@@ -274,6 +276,21 @@ export class SeriesChart {
         }
         continue;
       }
+      if (s.kind === "scatter") {
+        // discrete markers per point: filled dot (default) or hollow ring — no connecting path.
+        const hollow = s.marker === "hollow";
+        ctx.strokeStyle = s.color;
+        ctx.fillStyle = s.color;
+        ctx.lineWidth = 1.4;
+        for (const p of s.points) {
+          const x = xOf(this.xv(p.time));
+          const y = yOf(p.value);
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          hollow ? ctx.stroke() : ctx.fill();
+        }
+        continue;
+      }
       if (s.kind === "area") {
         ctx.beginPath();
         s.points.forEach((p, i) => {
@@ -312,11 +329,18 @@ export class SeriesChart {
     for (const s of this.series) {
       if (!s.title) continue;
       ctx.strokeStyle = s.color;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(lx, PAD_TOP / 2);
-      ctx.lineTo(lx + 14, PAD_TOP / 2);
-      ctx.stroke();
+      ctx.fillStyle = s.color;
+      ctx.lineWidth = s.kind === "scatter" ? 1.4 : 2;
+      if (s.kind === "scatter") {
+        ctx.beginPath();
+        ctx.arc(lx + 7, PAD_TOP / 2, 3, 0, Math.PI * 2);
+        s.marker === "hollow" ? ctx.stroke() : ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(lx, PAD_TOP / 2);
+        ctx.lineTo(lx + 14, PAD_TOP / 2);
+        ctx.stroke();
+      }
       ctx.fillStyle = colors.muted;
       ctx.fillText(s.title, lx + 18, PAD_TOP / 2 + 0.5);
       lx += 24 + ctx.measureText(s.title).width;

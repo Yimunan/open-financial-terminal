@@ -370,7 +370,13 @@ def correlation_matrix(
     errors: list[dict] = []
     for k in keys:
         try:
-            signals[k] = _signed_scores(dm, fstore, fprov, store, universe, prices, k)
+            sig = _signed_scores(dm, fstore, fprov, store, universe, prices, k)
+            # An all-NaN signal (e.g. alpha factors when the store has no OHLCV panels) would
+            # empty the pooled dropna() and NaN the whole matrix — skip it like a build failure.
+            if not sig.notna().any().any():
+                errors.append({"factor": k, "error": "empty signal: no data for its inputs"})
+                continue
+            signals[k] = sig
         except Exception as e:  # noqa: BLE001 - a factor that can't be built is skipped, not fatal
             errors.append({"factor": k, "error": f"{type(e).__name__}: {e}"})
     if len(signals) < 2:

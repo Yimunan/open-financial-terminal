@@ -501,11 +501,6 @@ export const api = {
   llmModels: () => get<import("./types").LlmTestResult>("/api/settings/llm/models"),
   saveLlmSettings: (body: { base_url: string; api_key?: string; model?: string }) =>
     send<import("./types").LlmSettings>("PUT", "/api/settings/llm", body),
-  testLlmSettings: (body: { base_url?: string; api_key?: string; model?: string }) =>
-    send<import("./types").LlmTestResult>("POST", "/api/settings/llm/test", body),
-  probeLlmSettings: (body: { base_url?: string; api_key?: string; model?: string }) =>
-    send<import("./types").LlmProbeResult>("POST", "/api/settings/llm/probe", body),
-  clearLlmKey: () => send<import("./types").LlmSettings>("DELETE", "/api/settings/llm/key"),
 
   // News sources (which feeds the News widget pulls from)
   newsSettings: () => get<import("./types").NewsSourceSettings>("/api/settings/news"),
@@ -541,11 +536,54 @@ export const api = {
   // Probe Alpaca market-data creds for the equity realtime source (blank key/secret → saved creds)
   testMarketDataEquity: (body: { api_key?: string; api_secret?: string; feed?: string }) =>
     send<import("./types").OkResult>("POST", "/api/settings/market-data/test-equity", body),
+  // Probe an order-book depth source for an asset class (blank source → the saved depth source)
+  testMarketDataDepth: (body: { asset: string; source?: string }) =>
+    send<import("./types").OkResult>("POST", "/api/settings/market-data/test-depth", body),
+  // Probe the options-chain source (blank → saved source/underlying)
+  testMarketDataOptions: (body: { source?: string; underlying?: string }) =>
+    send<import("./types").OkResult>("POST", "/api/settings/market-data/test-options", body),
+
+  // Options chains (standalone chain subsystem)
+  optionExpirations: (underlying: string) =>
+    get<import("./types").OptionExpirationsResponse>(
+      `/api/options/expirations?underlying=${encodeURIComponent(underlying)}`,
+    ),
+  optionChain: (underlying: string, expiry: string) =>
+    get<import("./types").OptionChainResponse>(
+      `/api/options/chain?underlying=${encodeURIComponent(underlying)}&expiry=${encodeURIComponent(expiry)}`,
+    ),
+  // Single-leg option paper order (local sim book). Premium is per-contract (not ×100).
+  submitOptionOrder: (body: {
+    underlying?: string; expiry?: string; strike?: number; right?: "call" | "put"; occ?: string;
+    side: "buy" | "sell"; quantity: number; type?: string; limit_price?: number;
+  }) => send<{ order_id: string; ok: boolean; book: string; occ: string }>(
+    "POST", "/api/paper/option-order", body,
+  ),
+  // Multi-leg (combo) option paper order — 2–4 legs, market, local sim book.
+  submitComboOrder: (body: import("./types").ComboOrderRequest) =>
+    send<import("./types").ComboOrderResult>("POST", "/api/paper/combo-order", body),
   // Remove the saved Alpaca credentials entirely (broker falls back to the local sim)
   removeAlpacaCreds: () =>
     send<import("./types").MarketDataSettings>("DELETE", "/api/settings/market-data/alpaca"),
   clearMarketDataCache: () =>
     send<import("./types").OkResult>("POST", "/api/settings/market-data/clear-cache"),
+
+  // Market-data vendor providers (Databento / Polygon / Tradier / dxFeed / IBKR credentials).
+  // Stored encrypted server-side; the status view never returns a saved secret.
+  providerSettings: () => get<import("./types").ProviderSettings>("/api/settings/providers"),
+  saveProvider: (body: import("./types").ProviderIn) =>
+    send<import("./types").ProviderSettings>("PUT", "/api/settings/providers", body),
+  removeProvider: (name: string) =>
+    send<import("./types").ProviderSettings>(
+      "DELETE",
+      `/api/settings/providers/${encodeURIComponent(name)}`,
+    ),
+
+  // Filesystem browse — sub-directories of a path, for the in-app folder picker (dir settings).
+  fsList: (path = "") =>
+    get<import("./types").FsList>(
+      `/api/settings/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
 
   // Automatic background data refresh (per-job enable/interval, status, manual trigger)
   dataRefreshStatus: () =>

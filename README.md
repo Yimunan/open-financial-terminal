@@ -1,275 +1,439 @@
 # Open Financial Terminal
 
-A financial terminal with a dockable widget workspace, built over the
-[qhfi](https://github.com/<github-username>/quant-hedge-fund-incubator) quant engine and a local
-OpenAI-compatible LLM endpoint. The frontend is a React/TypeScript single-page app; the backend is a
-FastAPI service that imports qhfi as a library. It runs locally and is MIT licensed.
+A Bloomberg-style, dockable-widget financial workspace — live charts, an options desk, a factor
+screener, backtesting, portfolio & risk, paper trading, SEC filings, macro/rates, and a fleet of LLM
+research agents — running as a real desktop app on **Windows and macOS**, **no browser and no login**.
+
+<p align="center">
+  <img src="docs/screenshots/hero.png" alt="Open Financial Terminal" width="900">
+</p>
+
+<p align="center">
+  <img alt="windows" src="https://img.shields.io/badge/Windows-10%2F11%20x64-0078D6?logo=windows">
+  <img alt="macos" src="https://img.shields.io/badge/macOS-12%2B%20arm64-black?logo=apple">
+  <img alt="modules" src="https://img.shields.io/badge/modules-34-blue">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+  <a href="https://github.com/Yimunan/open-financial-terminal/releases/latest">
+    <img alt="release" src="https://img.shields.io/github/v/release/Yimunan/open-financial-terminal?display_name=tag"></a>
+</p>
+
+---
 
 ## Contents
 
-- [Overview](#overview)
-- [Modules](#modules)
-- [Data sources](#data-sources)
-- [Requirements](#requirements)
-- [Quickstart](#quickstart)
-- [Desktop app](#desktop-app)
-- [Configuration](#configuration)
-- [Paper trading](#paper-trading)
-- [Keyboard](#keyboard)
-- [Backend API](#backend-api)
-- [MCP (Model Context Protocol)](#mcp-model-context-protocol)
-- [Project layout](#project-layout)
-- [Architecture](#architecture)
+- [Install](#-install) — **two options: [Windows](#windows-x64) · [macOS](#macos-apple-silicon)**
+- [The workspace](#the-workspace)
+- [Modules](#modules) — a screenshot + description of all **34** widgets
+- [Data & configuration](#data--configuration)
+- [Build from source](#build-from-source)
+- [Repo layout (standalone)](#repo-layout-standalone)
+- [Notes & caveats](#notes)
+- [Credits & license](#credits--license)
 
-## Overview
+---
 
-- **Workspace** — each tool is a widget in a draggable, resizable, tabbed grid (Dockview). Layouts
-  are saved as named workspaces in SQLite, and a workspace can be saved as a reusable template.
-- **Channel linking** — widgets are assigned to a color channel (red/blue/green) and share an active
-  symbol. Selecting a symbol on one channel updates every other widget on the same channel; widgets
-  with no channel are independent.
-- **Command bar (Ctrl+K)** — search tickers, open widgets, and switch theme. Free text is sent to the
-  local LLM, which maps it onto the qhfi factor screener (e.g. "low-vol names in dow30" configures a
-  screener widget).
-- **Data labeling** — each widget labels its data as LIVE, DELAYED, or EOD so the freshness of every
-  value is visible.
-- **LLM integration** — the assistant, news sentiment, the natural-language screener, and the agent
-  modules call a local OpenAI-compatible endpoint (default `http://localhost:8001/v1`). The endpoint
-  and model can be changed from Settings, including pointing at an online provider.
-- **Localization** — the UI ships with multiple languages and light/dark themes, plus a configurable
-  candle color scheme and accent color.
+## ⬇️ Install
+
+Both installers are attached to the [latest release](https://github.com/Yimunan/open-financial-terminal/releases/latest).
+
+### Windows (x64)
+
+1. Download **`OpenFinancialTerminal-Setup.exe`**. If Edge flags the download: **… → Keep → Keep anyway**.
+2. Run it. The installer is **not code-signed**, so SmartScreen shows **"Windows protected your PC"**
+   — click **More info → Run anyway** (once).
+3. Pick **all users** (UAC prompt) or **just me** (no admin; also
+   `OpenFinancialTerminal-Setup.exe /CURRENTUSER`), then launch from the Start menu.
+
+**Requirements:** Windows 10/11, 64-bit, with the **Microsoft Edge WebView2 Runtime** (preinstalled
+on Windows 11 and most updated Windows 10 machines —
+[Evergreen installer](https://developer.microsoft.com/microsoft-edge/webview2/) otherwise).
+Full details in [INSTALL-Windows.md](INSTALL-Windows.md).
+
+### macOS (Apple Silicon)
+
+1. Download **`OpenFinancialTerminal.dmg`**.
+2. Open it and **drag "Open Financial Terminal" onto the Applications folder**.
+3. First launch — the app is **not Apple-notarized**, so macOS warns. **Right-click the app → Open →
+   Open** (once). If still blocked on macOS 15+: **System Settings → Privacy & Security → Open
+   Anyway**. Equivalent one-liner:
+   ```bash
+   xattr -cr "/Applications/Open Financial Terminal.app" && open "/Applications/Open Financial Terminal.app"
+   ```
+
+**Requirements:** macOS 12+ on **Apple Silicon (M1/M2/M3/M4…)** — `arm64` only, no Intel build.
+Full details in [INSTALL-macOS.md](INSTALL-macOS.md).
+
+> First launch takes a little longer on both platforms (the app unpacks/seeds its runtime once and a
+> one-time background bootstrap downloads a baseline market-data lake — Dow 30 + crypto majors, 3
+> years); charts fill in as data lands.
+
+---
+
+## The workspace
+
+The terminal is a single window tiled with **draggable, resizable, tabbed widgets** — a Dockview
+"bento" grid you rearrange freely, split into panes, tab together, maximize, or pop out into their
+own native window (⧉).
+
+A few conventions run through every module:
+
+- **Ctrl+K / ⌘K command bar** — open any module, jump to a symbol, or apply a workspace template.
+- **Link channels** — each widget carries a colored dot (🔴 red / 🔵 blue / 🟢 green, or none). Widgets
+  on the same channel **share the active symbol**, so picking `NVDA` in a Watchlist retargets the
+  linked Chart, Quote, Order Book, News and Options in one click. Different channels track different
+  symbols side-by-side.
+- **Freshness badges** — every value is tagged **LIVE / DELAYED / EOD** so you always know how fresh
+  a number is.
+- **Workspace templates** — ready-made desks (Equities Day-Trading, Crypto, Research & Due Diligence,
+  Quant Research, Portfolio & Risk, Macro & Markets, Algo/Execution) you can apply and then save your
+  own layouts.
+- **Cross-module "Send to…"** — hand a result off between modules (a screen → a watchlist, a backtest
+  → paper trading, a factor → the backtester).
+
+---
 
 ## Modules
 
-The workspace is composed of widgets, grouped here by area. Not every module is in the default layout;
-open more from the command bar (Ctrl+K).
+All 34 modules at a glance — jump to any section below.
 
-- **Market data and charts** — Watchlist, Market Board, Quote, Profile (metrics, chart, and
-  fundamentals tabs for one symbol), Chart and Chart Studio (candles / Heikin Ashi / area, indicator
-  overlays, 1m–1d scrubber), Order Book (crypto L2 depth), Time & Sales (crypto trade prints with a
-  configurable large-trade threshold), Map (module wiring map).
-- **Screening and factors** — Screener (with natural-language query), Factor Performance (factor
-  monitor / scorecard), Factors (factor library).
-- **Backtesting and strategy** — Backtest (cross-sectional factor backtests, plus a single-instrument
-  "Lab" mode with stop-loss/take-profit and parameter sweeps; transaction costs, PSR / Deflated Sharpe
-  metrics, explicit date window with P&L), Strategies (strategy library), Models (model repository).
-- **Portfolio and risk** — Portfolio (multiple named holdings books, P&L, correlation), Portfolio
-  Builder, Risk Attribution (Barra factor risk, realized return attribution, Brinson sector
-  attribution).
-- **Execution** — Paper Trading (local simulator or Alpaca paper), Algo Trading (scheduled strategy
-  runner), Market Making (Avellaneda–Stoikov / inventory-quoting backtests).
-- **News and filings** — News (LLM sentiment, configurable sources and ranking), Topic News
-  (keyword subscriptions), Public Filings (SEC/EDGAR), New Listings.
-- **Macro and FICC** — Macro (FRED series and the Treasury yield curve), FICC (Treasury futures, G10
-  spot FX, and commodity futures, EOD quotes). The former standalone Rates view is merged into these.
-- **Research and agents** — Assistant (streaming, symbol-aware chat that can also open and configure
-  widgets), Research Loop (an autonomous factor-research loop), Agent Workflow (a visual node graph
-  compiled to a LangGraph state machine, with an LLM copilot and an agentic edit→run→fix mode),
-  Committees (proxied to a separate crewAI service), Sandbox.
+| Market & charts | Options | News & filings | Quant & backtesting | Portfolio & risk | Execution | Macro / FICC | Research & AI |
+|---|---|---|---|---|---|---|---|
+| [Watchlist](#watchlist) · [Market Board](#market-board) · [Quote](#quote) · [Profile](#profile) · [Chart](#chart) · [Chart Studio](#chart-studio) · [Order Book](#order-book) · [Time & Sales](#time--sales) | [Option Chain](#option-chain) · [Options Surface](#options-surface) | [News](#news) · [Topic News](#topic-news) · [Public Filings](#public-filings) · [New Listings](#new-listings) | [Screener](#screener) · [Factors](#factors) · [Factor Performance](#factor-performance) · [Backtest](#backtest) · [Strategies](#strategies) · [Models](#models) · [Sandbox](#sandbox) | [Portfolio](#portfolio) · [Portfolio Builder](#portfolio-builder) · [Risk Attribution](#risk-attribution) | [Paper Trading](#paper-trading) · [Algo Trading](#algo-trading) · [Market Making](#market-making) | [Macro](#macro) · [FICC](#ficc) | [Assistant](#assistant) · [Agent Workflow](#agent-workflow) · [Research Loop](#research-loop) · [Committees](#committees) · [Map](#map) |
 
-See [docs/factors-strategies-models.md](docs/factors-strategies-models.md) and
-[docs/algo-trading.md](docs/algo-trading.md) for the quant and execution modules in more depth.
+> Screenshots below are captured from the running app with live data — real EDGAR filings, FRED
+> macro series, market bars, a sample holdings book and paper positions, a full Barra risk
+> decomposition, and an LLM-built chart. The UI is identical on Windows and macOS. One exception
+> renders its **empty state**: Time & Sales (the equity tape needs a live feed — add Alpaca keys).
 
-## Data sources
+### Market data & charts
 
-- **Equities** — daily bars from yfinance; optional real-time quotes from Alpaca (IEX free feed or SIP
-  paid feed). Fundamentals are point-in-time from qhfi.
-- **Crypto** — historical bars and real-time order book / trades / ticker from a ccxt exchange
-  (default `kraken`; `binance.com` returns HTTP 451 from US/geo-restricted IPs). Real-time streams use
-  ccxt.pro websockets.
-- **Rates and macro** — Treasury curve and US macro indicators from FRED.
-- **Filings** — SEC/EDGAR filings feed and new-listings scan (set a `SEC_USER_AGENT`).
-- **News** — yfinance, Yahoo RSS, and Google News RSS built-ins, plus user-added custom RSS feeds, with
-  a configurable ranking formula (recency / source / relevance / sentiment / match weights).
+#### Watchlist
+A live, linkable list of symbols with a 30-day sparkline, last price and % change. Equities poll
+delayed/EOD quotes; crypto rows ride the live ticker stream; an optional NBBO bid/ask sub-line sits
+under the price. Add tickers inline and link the list to a channel to drive the rest of your desk.
 
-Market data is read from and cached into the qhfi parquet lake (the sibling repo's `data/lake/`).
-A background refresh loop keeps the lake current for active symbols on per-job cadences (daily bars,
-news, rates, macro, filings); equity-bar refresh can be limited to US market hours. Cadences are set
-in Settings → Data Refresh and persist in SQLite.
+<img src="docs/screenshots/widgets/watchlist.png" alt="Watchlist" width="420">
 
-## Requirements
+#### Market Board
+A cross-asset quote board with tabs for **Equities, Commodities, Bonds & Rates, FX and Crypto**, plus
+a cross-asset **Correlation** view — indices and benchmarks with sparklines and change at a glance.
 
-- Windows (the setup/dev scripts are PowerShell; the stack itself is cross-platform)
-- Python 3.11+, Node 18+
-- The [qhfi](https://github.com/<github-username>/quant-hedge-fund-incubator) engine cloned as a
-  sibling directory next to this repo (so the path resolves to `../quant-hedge-fund-incubator`).
-  `scripts/setup.ps1` installs it editable (`pip install -e ../quant-hedge-fund-incubator`) and exits
-  if the sibling is missing.
-- A local OpenAI-compatible LLM endpoint on `:8001` (e.g. vLLM) for the assistant, news-sentiment, and
-  agent features. The rest of the terminal runs without it.
-- Optional: an [Alpaca](https://alpaca.markets) paper account for Alpaca-routed paper trading and
-  equity real-time quotes; a running crewAI service for the Investment Committee module.
+<img src="docs/screenshots/widgets/market_board.png" alt="Market Board" width="820">
 
-## Quickstart
+#### Quote
+A focused single-symbol quote: large last price and change, sparkline, bid/ask, spread, day high/low
+and volume, with a freshness badge. Enter Alpaca keys for live NBBO bid/ask.
+
+<img src="docs/screenshots/widgets/quote.png" alt="Quote" width="420">
+
+#### Profile
+Everything about one name on three tabs — **Metrics / Chart / Fundamentals**: valuation (market cap,
+P/E, P/B), profitability & quality (ROE, margins), growth, risk/return (volatility, Sharpe, Sortino,
+max drawdown, Calmar, beta), trailing returns and the 52-week range.
+
+<img src="docs/screenshots/widgets/metrics.png" alt="Profile" width="820">
+
+#### Chart
+A price chart with **candles / Heikin-Ashi / area**, indicator overlays (SMA, EMA, RSI, MACD,
+Bollinger) and 1m→1d timeframes, drawn on a from-scratch canvas engine with a volume histogram below.
+
+<img src="docs/screenshots/widgets/chart.png" alt="Chart" width="820">
+
+#### Chart Studio
+A **chat-driven charting canvas**: describe the chart you want in plain English — *"AAPL daily with a
+50-day SMA and RSI"*, *"compare AAPL, MSFT, NVDA over 1 year"* — and it builds it, keeping a history of
+past charts.
+
+<img src="docs/screenshots/widgets/chart_studio.png" alt="Chart Studio" width="820">
+
+#### Order Book
+A live **L2 depth ladder** for any asset class, drawn as a depth heatmap (row width = cumulative size,
+opacity ∝ level size; liquidity walls highlighted). Ships with a synthetic **sim** depth source and is
+pluggable to real venues (IBKR / Databento / dxFeed).
+
+<img src="docs/screenshots/widgets/orderbook.png" alt="Order Book" width="420">
+
+#### Time & Sales
+The live **tape** — streaming trade prints (price, size, aggressor side) for any asset class. Equities
+stream from a real feed (Alpaca); rates/FX/commodities use a built-in simulated tape.
+
+<img src="docs/screenshots/widgets/timesales.png" alt="Time & Sales" width="420">
+
+### Options
+
+#### Option Chain
+A full equity **options chain** (calls | strike | puts) with bid/ask, implied vol and greeks per
+expiry. Select contracts to build a single-leg ticket and paper-trade it.
+
+<img src="docs/screenshots/widgets/options_chain.png" alt="Option Chain" width="820">
+
+#### Options Surface
+The implied-volatility structure for an underlying: the per-expiry **IV smile** (calls vs puts across
+strikes) and an expiry×strike **IV surface heatmap**.
+
+<img src="docs/screenshots/widgets/options_surface.png" alt="Options Surface" width="820">
+
+### News & filings
+
+#### News
+Per-symbol headlines for the linked ticker, each **LLM-scored for sentiment** and composite-ranked,
+aggregated across sources with timestamps.
+
+<img src="docs/screenshots/widgets/news.png" alt="News" width="480">
+
+#### Topic News
+Symbol-agnostic **topic feeds** — built-in Market/Macro streams or your own interest topics — ranked
+and searchable, each topic its own draggable tab.
+
+<img src="docs/screenshots/widgets/topicnews.png" alt="Topic News" width="480">
+
+#### Public Filings
+**SEC/EDGAR** filings for a company (Financials, Events, Insider, Ownership, Governance, Offerings)
+with quick access to the source documents, plus Insider and Institutional views.
+
+<img src="docs/screenshots/widgets/filings.png" alt="Public Filings" width="820">
+
+#### New Listings
+Recent **exchange listings and IPOs** (8-A12B family / 424B4) over a chosen lookback, filterable by
+form type.
+
+<img src="docs/screenshots/widgets/listings.png" alt="New Listings" width="820">
+
+### Screening, factors & backtesting
+
+#### Screener
+A factor and **natural-language screener**: pick a universe + factor and Run, or ask in plain English
+— *"defensive low-vol names in the Dow"* — and a local LLM maps your words onto the qhfi factor
+catalog.
+
+<img src="docs/screenshots/widgets/screener.png" alt="Screener" width="820">
+
+#### Factors
+The **factor library** — built-in factors (momentum, volatility, reversal, value E/P & B/P, quality
+ROE & gross-margin, the Alpha101 set, composites) plus the qhfi engine factors — to browse, summarize,
+or open in the Sandbox.
+
+<img src="docs/screenshots/widgets/factors.png" alt="Factors" width="820">
+
+#### Factor Performance
+An agent-driven single-factor **drill-down across three diagnostic layers** (Returns / Risk / Health):
+rank factors, inspect IC, quantile spreads, decay and turnover, and save a monitor.
+
+<img src="docs/screenshots/widgets/factor_monitor.png" alt="Factor Performance" width="820">
+
+#### Backtest
+A cross-sectional **factor backtester**, a single-instrument **Lab** with parameter sweeps, and a
+**Market-Making** mode — with transaction costs, PSR / Deflated Sharpe and an equity curve. Chat-driven
+with ready-made idea templates.
+
+<img src="docs/screenshots/widgets/backtest.png" alt="Backtest" width="820">
+
+#### Strategies
+A library of strategies: built-in single-symbol Lab templates (SMA/EMA/RSI/MACD crossover, Bollinger,
+Donchian) and qhfi engine portfolio strategies (MDP, model, momentum). Test one on the linked symbol
+or backtest it over a universe.
+
+<img src="docs/screenshots/widgets/strategies.png" alt="Strategies" width="820">
+
+#### Models
+The **model repository**: register and manage trained models that bundle a factor + strategy +
+universe + params for reuse across research and execution.
+
+<img src="docs/screenshots/widgets/models.png" alt="Models" width="820">
+
+#### Sandbox
+An **AST-restricted Python sandbox** for authoring custom factors/strategies: write a factor formula,
+run it across a universe, and save it to your libraries — no imports, no I/O.
+
+<img src="docs/screenshots/widgets/sandbox.png" alt="Sandbox" width="820">
+
+### Portfolio & risk
+
+#### Portfolio
+A holdings book with tabs for **Holdings, Composition, Risk and Attribution**: positions, cost, P&L,
+and per-name composition.
+
+<img src="docs/screenshots/widgets/portfolio.png" alt="Portfolio" width="820">
+
+#### Portfolio Builder
+Construct and save a portfolio as a **weight + allocation list** (symbol → target weight) that you can
+normalize (gross 100%, dollar-neutral for long/short) and value into share counts against a capital
+base.
+
+<img src="docs/screenshots/widgets/portfolios.png" alt="Portfolio Builder" width="820">
+
+#### Risk Attribution
+Portfolio-level **Barra factor + position risk decomposition** for the whole book, with Risk /
+Realized / Brinson views and a Holdings/Paper source toggle.
+
+<img src="docs/screenshots/widgets/risk_attribution.png" alt="Risk Attribution" width="820">
+
+### Execution
+
+#### Paper Trading
+A paper-trading **blotter** (local simulator or **Alpaca paper**): order ticket, cash, unrealized /
+realized P&L, positions, and an equity-curve sparkline.
+
+<img src="docs/screenshots/widgets/paper.png" alt="Paper Trading" width="820">
+
+#### Algo Trading
+Scheduled/templated **algos** seeded from the linked symbol (e.g. an AAPL SMA-cross, a Dow30 momentum
+long-only), each arm-able and runnable on a cadence for automated paper execution.
+
+<img src="docs/screenshots/widgets/algo_trading.png" alt="Algo Trading" width="820">
+
+#### Market Making
+Compare **market-making quoting strategies** over real bars + synthetic depth, tuning book spread,
+quote half-spread and inventory skew / limits.
+
+<img src="docs/screenshots/widgets/market_making.png" alt="Market Making" width="820">
+
+### Macro & FICC
+
+#### Macro
+A macroeconomic dashboard over the qhfi lake (**FRED + World Bank + Treasury curve**): a US indicators
+grid, the Treasury yield curve, a series explorer over the full catalog, and a World Bank
+cross-country panel.
+
+<img src="docs/screenshots/widgets/macro.png" alt="Macro" width="820">
+
+#### FICC
+A unified **fixed-income / currencies / commodities** board: the Treasury yield curve and CME Treasury
+futures complex (ZQ/ZT/ZF/ZN/ZB/UB), G10 spot FX, and the commodity futures complex
+(metals/energy/agriculture), plus a cross-asset correlation tab. EOD daily bars.
+
+<img src="docs/screenshots/widgets/ficc.png" alt="FICC" width="820">
+
+### Research & AI
+
+#### Assistant
+A streaming, **symbol-aware LLM assistant** grounded in the terminal's live data via read-only tools
+(quote, fundamentals, news, compare, screen, performance). It can also **open and configure modules**
+for you.
+
+<img src="docs/screenshots/widgets/assistant.png" alt="Assistant" width="480">
+
+#### Agent Workflow
+A **visual node-graph** you compile to a LangGraph agent: wire Data → Strategy → Portfolio →
+Backtest/Execution nodes (and Quote, News, Factor-screen, Research Loop, Committee, LLM, Python steps).
+With **Reveal** on, each node streams its output into the matching module.
+
+<img src="docs/screenshots/widgets/agent.png" alt="Agent Workflow" width="820">
+
+#### Research Loop
+An autonomous **design → generate → evaluate → reflect** loop over the qhfi engine: give it a goal and
+it designs a factor experiment, backtests it, grades it against the promotion scorecard, and iterates
+up to 5 times — pinning the best.
+
+<img src="docs/screenshots/widgets/research_loop.png" alt="Research Loop" width="820">
+
+#### Committees
+An **investment-committee simulation**: LLM agents (Bull/Growth, Bear/Risk, Macro Strategist, Chair)
+whose assessments feed one another along a directed relationship graph toward a synthesized decision.
+Runs on the external crew service or falls back to a local-LLM committee.
+
+<img src="docs/screenshots/widgets/committee.png" alt="Committees" width="820">
+
+#### Map
+An SVG **module-wiring map** of the terminal: **Catalog** mode shows the static architecture (every
+widget type, channel groups, send routes and the data layer); **Live** mode shows your open workspace.
+Filter by edge type (Links / Sends / Data).
+
+<img src="docs/screenshots/widgets/map.png" alt="Map" width="820">
+
+---
+
+## Data & configuration
+
+- **Live public data out of the box** — equities via Yahoo Finance, crypto via ccxt (Kraken), SEC
+  filings via EDGAR, Treasury curve via public rate series. No keys required for these.
+- **Live equities & the tape (optional)** — add **Alpaca** paper keys under **Ctrl+K/⌘K → Settings →
+  Market Data** for live equity quotes, NBBO bid/ask, the streaming Time & Sales tape, and Alpaca
+  paper trading. Order-book depth ships with a built-in simulator and is pluggable to IBKR /
+  Databento / dxFeed.
+- **AI assistant / NL screener / agents** — open **Ctrl+K/⌘K → Settings → Model & provider** and
+  point the terminal at any OpenAI-compatible API. Two equally supported flavors (the chip shows
+  which one is active):
+  - **Local API** — a server on your own machine, no key needed. Example (Ollama): base URL
+    `http://localhost:11434/v1`, model `gemma4:e4b-it-qat` (or any model you've pulled).
+  - **Online API** — a hosted provider, API key required. Example (DeepSeek): base URL
+    `https://api.deepseek.com/v1`, model `deepseek-v4-flash`. **No key ships in the app.**
+- **App state** (settings DB, qhfi config + registry, the market-data lake) lives under
+  `%APPDATA%\OpenFinancialTerminal` on Windows (logs + the per-install encryption key under
+  `%LOCALAPPDATA%\OpenFinancialTerminal`) and `~/OpenFinancialTerminal/` on macOS. Each install
+  generates its own encryption key on first run.
+
+---
+
+## Build from source
+
+This repo is **standalone** — the qhfi engine is vendored in-tree (see
+[repo layout](#repo-layout-standalone)), so one clone builds everything.
+
+### Windows installer
+
+On Windows 10/11 x64 (Python 3.11+, Node 18+, Inno Setup 6 — `winget install JRSoftware.InnoSetup`):
 
 ```powershell
-./scripts/setup.ps1   # one-time: backend venv + qhfi (editable) + npm install
-./scripts/dev.ps1     # backend :8050 + frontend :5173 in separate windows
+git clone https://github.com/Yimunan/open-financial-terminal
+cd open-financial-terminal
+pwsh scripts\setup.ps1                              # venv + engine + backend + frontend deps
+pwsh scripts\build_desktop.ps1 -Installer -Version 1.0.3
+# → packaging\dist_installer\OpenFinancialTerminal-Setup-1.0.3.exe
 ```
 
-Open http://localhost:5173 and press **Ctrl+K**. On a fresh install with an empty lake, the backend
-pulls a baseline (Dow 30 + major crypto) in the background so the terminal isn't empty.
+Or let CI do it: [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml) runs
+the same pipeline on a `windows-latest` runner, smoke-tests the frozen backend, and uploads the
+installer — it's how the Windows release asset here is produced.
 
-The interactive API docs are at http://localhost:8050/docs.
+### macOS app / DMG
 
-## Desktop app
+On Apple Silicon, macOS 12+ (with `uv` and Node 18+): [`build/build-macos.sh`](build/build-macos.sh)
+performs the PyInstaller freeze + ad-hoc codesign + DMG packaging — see
+[build/README.md](build/README.md).
 
-The terminal also runs as a standalone Windows desktop app: a PyWebView shell over a
-PyInstaller-frozen backend, packaged with an Inno Setup installer. In a desktop build the backend
-serves the built frontend bundle from the same origin, so the webview points straight at
-`http://127.0.0.1:<port>` with no CORS or URL rewriting. State is written to
-`%APPDATA%\OpenFinancialTerminal` so the install directory stays read-only.
+```bash
+bash build/build-macos.sh ~/oft-build
+# → ~/oft-build/OpenFinancialTerminal.dmg
+```
 
-The built installer is not committed to the repo; build it locally following
+For day-to-day development (hot-reload backend + Vite dev server) see
 [docs/DESKTOP.md](docs/DESKTOP.md).
 
-## Configuration
+---
 
-Backend settings use the `OFT_` prefix and are read from environment variables or `backend/.env`
-(see `backend/.env.example`). Paths are resolved relative to `backend/`.
+## Repo layout (standalone)
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OFT_DATA_DIR` | `./data` | Terminal data dir (SQLite-adjacent JSON config, caches). |
-| `OFT_UNIVERSE_DIR` | sibling qhfi `config/instruments` | Universe (instrument list) YAMLs. |
-| `OFT_DB_PATH` | `./oft.sqlite` | Terminal-owned state (workspaces, watchlists, holdings, alerts). |
-| `OFT_CORS_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Allowed dev-frontend origins. |
-| `OFT_CRYPTO_EXCHANGE` | `kraken` | Default ccxt exchange for crypto bars + streams. |
-| `OFT_LLM_MODEL` | unset | Pin a model id; otherwise resolved from the proxy's `/v1/models`. |
-| `OFT_LLM_MODEL_PREFER` | `gemma` | Substring preferred when auto-resolving a served model. |
-| `OFT_PAPER_INITIAL_CASH` | `100000` | Starting cash for the local paper simulator. |
-| `OFT_ALPACA_API_KEY` / `_SECRET` | unset | Route paper orders + equity real-time to Alpaca. |
-| `OFT_ALPACA_PAPER` | `true` | Use Alpaca's paper environment. |
-| `OFT_DATA_REFRESH_ENABLED` | `true` | Master switch for background lake refresh. |
-| `OFT_DATA_REFRESH_*_S` | varies | Per-job cadences (bars/news/rates/macro/filings, seconds). |
-| `OFT_DATA_REFRESH_MARKET_HOURS_ONLY` | `true` | Skip equity-bar refresh outside US market hours. |
-| `OFT_SECRET_KEY` | generated | Key for encrypting secrets at rest (see below). |
-| `QHFI_*` | — | The qhfi engine's own config (e.g. `QHFI_LLM_BASE_URL`, `QHFI_LLM_MODEL`). |
+The terminal source lives at the repo root (`backend/`, `frontend/`, `packaging/`, `scripts/`,
+`build/`), and the **qhfi quant engine is vendored** at
+[`quant-hedge-fund-incubator/`](quant-hedge-fund-incubator/) — complete with its `qhfi.data` /
+`qhfi.models` packages — so a fresh clone needs no other repos. The build specs and scripts resolve
+the engine from a **sibling checkout first** (the development layout, so an editable clone of
+[quant-hedge-fund-incubator](https://github.com/Yimunan/quant-hedge-fund-incubator) next to this
+repo still takes precedence), falling back to the vendored copy.
 
-Most data/LLM/news settings are also editable at runtime from the in-app Settings dialog and persist
-as small JSON files in the data dir (`llm_provider.json`, `market_data.json`, `news_sources.json`,
-`news_topics.json`, `mcp_servers.json`) overlaid onto the env values — changes apply without a
-restart.
+Platform distribution repos with the same v1.0.3 releases:
+[open-financial-terminal-windows](https://github.com/Yimunan/open-financial-terminal-windows) ·
+[open-financial-terminal-mac-os](https://github.com/Yimunan/open-financial-terminal-mac-os).
 
-**Secrets at rest.** Alpaca and online-LLM API keys are stored encrypted (Fernet) using
-`OFT_SECRET_KEY` if set, otherwise an owner-only key file generated in the data dir. Both the key file
-and the data dir are gitignored.
+---
 
-## Paper trading
+## Notes
 
-With no Alpaca credentials, orders go to a local in-process simulator seeded with
-`OFT_PAPER_INITIAL_CASH`. Setting `OFT_ALPACA_API_KEY` / `OFT_ALPACA_API_SECRET` (or entering them in
-Settings → Market Data) routes orders to Alpaca's hosted paper environment instead. No live-trading
-path is exposed.
+- **Windows:** x64 only; **not code-signed** — expect the SmartScreen prompt on first run (see
+  [Install](#-install)). Requires the WebView2 Runtime. Each release is built and smoke-tested on
+  GitHub Actions (frozen backend boots, `/api/health` ok); the WebView2 window and interactive
+  installer have not been hand-tested on physical Windows hardware — the identical UI is validated
+  on the macOS build. [Report Windows-specific issues here](https://github.com/Yimunan/open-financial-terminal/issues).
+- **macOS:** Apple Silicon only (no Intel); ad-hoc signed, **not notarized** — expect the Gatekeeper
+  prompt on first open. Notarization needs an Apple Developer account.
+- Macro (FRED) cards and EDGAR filings require reaching `fred.stlouisfed.org` / `www.sec.gov`; where
+  those hosts are blocked they stay empty (the Treasury curve falls back to Yahoo tickers).
 
-## Keyboard
+## Credits & license
 
-| Key | Action |
-| --- | --- |
-| `Ctrl+K` | Command bar (tickers, widgets, commands, NL query) |
-| `T` | Ticker search (command bar) |
-| `C` | New chart widget |
-| `N` | New news widget |
+Open Financial Terminal and the [qhfi engine](https://github.com/Yimunan/quant-hedge-fund-incubator)
+are **MIT-licensed** — see [LICENSE](LICENSE). This repo contains the terminal source, the vendored
+engine, and the packaging + CI build tooling for both platforms.
 
-Single-key shortcuts are inactive while typing in an input.
-
-## Backend API
-
-The FastAPI app registers ~33 router modules and serves interactive docs at `/docs`. Most routes are
-registered directly under `/api` (for example `/api/ask`, `/api/summarize`, `/api/assistant/tools`,
-`/api/workspaces`, `/api/templates`). Several modules namespace their routes under a dedicated prefix:
-
-- `/api/agent` — agent workflow builder
-- `/api/mm` — market making
-- `/api/lab` — strategy lab
-- `/api/factor-monitor` — factor performance
-- `/api/research`, `/api/committee`, `/api/sandbox` — research / committee / sandbox
-- `/api/paper`, `/api/algo` — execution
-- `/api/registry`, `/api/settings` (and `/api/settings/data-refresh`) — registry / settings
-
-WebSocket endpoints stream the realtime market hub (`/api/ws/stream`), the assistant chat
-(`/api/ws/chat`), the agent run / coder loops (`/api/agent/run`, `/api/agent/code`), and per-module
-agent sockets (e.g. `/api/factor-monitor/agent`). The realtime hub ref-counts ccxt.pro exchange
-websockets and coalesces fan-out to ~150 ms.
-
-> Trust model: the backend has no authentication (localhost / CORS only). It is intended for local
-> use; do not expose it to an untrusted network.
-
-## MCP (Model Context Protocol)
-
-The terminal speaks MCP in both directions.
-
-**Expose the terminal as an MCP server.** A standalone stdio server in `backend/mcp_server/` exposes
-the seven read-only assistant tools (`get_quote`, `get_performance`, `get_fundamentals`, `get_news`,
-`screen`, `compare`, `search_symbols`) so agents such as Claude Code, Claude Desktop, or OpenCode can
-query market data. It is a thin process that calls the running backend over HTTP, so the backend must
-be up first.
-
-```bash
-# from backend/, with the venv python; backend must be running on :8050
-python -m mcp_server.server                 # speaks stdio
-# point it at a non-default backend:
-OFT_MCP_BASE_URL=http://localhost:8050 python -m mcp_server.server
-```
-
-Register it with Claude Code (use the venv's python so `mcp` is importable):
-
-```bash
-claude mcp add oft -- "C:\\Project\\Open Financial Terminal\\backend\\.venv\\Scripts\\python.exe" -m mcp_server.server
-```
-
-Or in Claude Desktop's `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "oft": {
-      "command": "C:\\Project\\Open Financial Terminal\\backend\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "mcp_server.server"],
-      "cwd": "C:\\Project\\Open Financial Terminal\\backend",
-      "env": { "OFT_MCP_BASE_URL": "http://localhost:8050" }
-    }
-  }
-}
-```
-
-**Consume external MCP servers.** Register MCP servers (Settings → MCP Servers, or by editing
-`backend/data/mcp_servers.json`) and their tools join the assistant's plan→fetch→stream loop,
-namespaced `mcp:<server>:<tool>`. Discovery is best-effort: a server that is down or misconfigured is
-skipped and does not break chat. Each entry is `{name, transport: "stdio"|"http", command, args, env,
-url, headers, enabled}` (up to 20 servers).
-
-## Project layout
-
-```
-Open Financial Terminal/
-├── backend/                 FastAPI service + MCP server + desktop launcher
-│   ├── app/
-│   │   ├── main.py          app entrypoint: router registration, SPA mount, startup lifespan
-│   │   ├── config.py        OFT_ settings + persisted Settings overrides (LLM/market/news/MCP)
-│   │   ├── deps.py          singletons: DataManager, LLMClient, broker, store, background runners
-│   │   ├── routers/         ~33 HTTP/WebSocket route modules
-│   │   ├── services/        adapters: realtime hub, screener, strategy lab, risk, agents, ...
-│   │   └── store.py         SQLite state (workspaces, holdings books, watchlists, alerts)
-│   ├── mcp_server/          stdio MCP server (7 read-only tools)
-│   ├── run_desktop.py       PyWebView launcher (and --server-only for a sidecar)
-│   ├── oft-backend.spec     PyInstaller spec
-│   └── pyproject.toml
-├── frontend/                React + TypeScript + Vite SPA
-│   └── src/
-│       ├── widgets/         dockable widget components
-│       ├── state/           zustand stores (channel linking, workspaces, agent runs, settings)
-│       ├── lib/             canvas chart engine, websocket client, i18n
-│       └── api/             REST client + types
-├── packaging/               Inno Setup installer script
-├── scripts/                 setup.ps1, dev.ps1, build_desktop.ps1
-└── docs/                    ARCHITECTURE.md, DESKTOP.md, algo-trading.md, factors-strategies-models.md
-```
-
-## Architecture
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). In short: a FastAPI backend that imports qhfi as a
-library (it does not reimplement quant logic), a realtime hub that ref-counts ccxt.pro exchange
-websockets and coalesces fan-out to ~150 ms, and a React/TypeScript frontend where Dockview owns
-layout, zustand owns channel linking, and TanStack Query owns REST state. In a desktop build the
-backend additionally serves the built frontend from the same origin.
+*Not investment advice. Data is provided by third parties for informational use only.*

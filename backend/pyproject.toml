@@ -36,6 +36,11 @@ dev = ["pytest>=8.2", "ruff>=0.5"]
 desktop = ["pywebview>=5.0"]
 # Distributable-installer toolchain (PyInstaller freeze of the backend + standalone qhfi.exe).
 build = ["pyinstaller>=6.6"]
+# Real order-book depth vendors (Settings → Market Data → Order-book depth). Each is optional and
+# gated at runtime — the depth source reports "unavailable" until its SDK + creds are present.
+# ib_async also needs a running IB Gateway/TWS; databento needs DATABENTO_API_KEY; dxfeed needs
+# OFT_DXFEED_ADDRESS.  Install with:  pip install -e ".[providers]"
+providers = ["ib_async>=1.0", "databento>=0.34", "dxfeed>=0.5"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

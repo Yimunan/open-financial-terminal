@@ -29,7 +29,7 @@ from typing import Any, Callable
 from alpaca.data.enums import DataFeed
 from alpaca.data.live.stock import StockDataStream
 
-from app.config import get_alpaca_creds, get_equity_feed, get_realtime_source
+from app.config import equity_realtime_enabled, get_alpaca_creds, get_equity_feed
 
 log = logging.getLogger("oft.equity_stream")
 
@@ -77,7 +77,7 @@ class AlpacaStreamManager:
         Setting Settings → Market Data → Equity realtime to 'Off' disables the stream even with
         creds present (equities then fall back to polling).
         """
-        return get_realtime_source("equity") == "alpaca" and bool(get_alpaca_creds()[0])
+        return equity_realtime_enabled()  # (auto-)resolved Alpaca source AND creds
 
     def _ensure_started(self) -> None:
         """Lazily build the stream + run task in the current event loop (no-op if no creds)."""

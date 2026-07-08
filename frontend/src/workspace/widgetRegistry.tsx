@@ -9,12 +9,15 @@ import ErrorBoundary from "../components/ErrorBoundary";
 import type { Asset, SandboxMode, SandboxTrust, Timeframe } from "../api/types";
 import type { Channel } from "../state/linking";
 import { INTENT_KINDS, type AcceptMap, type IntentKind } from "../state/intents";
+import { withResizeGrip } from "./ResizeGrip";
 
 import WatchlistWidget from "../widgets/WatchlistWidget";
 import MarketBoardWidget from "../widgets/MarketBoardWidget";
 import ChartWidget from "../widgets/ChartWidget";
 import QuoteWidget from "../widgets/QuoteWidget";
 import OrderBookWidget from "../widgets/OrderBookWidget";
+import OptionChainWidget from "../widgets/OptionChainWidget";
+import OptionSurfaceWidget from "../widgets/OptionSurfaceWidget";
 import TimeSalesWidget from "../widgets/TimeSalesWidget";
 import NewsWidget from "../widgets/NewsWidget";
 import TopicNewsWidget from "../widgets/TopicNewsWidget";
@@ -53,6 +56,9 @@ export interface WidgetParams {
   initialQuery?: string;
   category?: string; // topicnews: which news topic (built-in key or user topic key)
   label?: string; // topicnews: display label / panel title
+  expiry?: string; // options chain: selected expiration (YYYY-MM-DD)
+  strike?: number; // options: strike
+  right?: import("../api/types").OptionRight; // options: call/put
   // sandbox: prefill when opened from a library ("Open in Sandbox" / "+ New")
   initialMode?: SandboxMode;
   initialTrust?: SandboxTrust;
@@ -103,6 +109,8 @@ export type WidgetType =
   | "chart"
   | "quote"
   | "orderbook"
+  | "options_chain"
+  | "options_surface"
   | "timesales"
   | "news"
   | "topicnews"
@@ -177,12 +185,29 @@ export const WIDGETS: Record<WidgetType, WidgetMeta> = {
     assistant: { description: "Detailed quote panel for one symbol", params: { symbol: "ticker", asset: "equity/crypto", channel: "red/blue/green/none" } },
   },
   orderbook: {
-    title: "Order Book", component: OrderBookWidget, defaultChannel: "blue",
-    assistant: { description: "Live L2 depth/order book (crypto)", params: { symbol: "pair e.g. BTC/USDT", channel: "red/blue/green/none" } },
+    // Default to the primary selection channel (red) so a palette-opened book follows the symbol
+    // your watchlist / command bar pick — same channel as chart/quote/watchlist.
+    title: "Order Book", component: OrderBookWidget, defaultChannel: "red",
+    assistant: { description: "Live L2 depth / order book for any asset class", params: { symbol: "ticker or pair e.g. AAPL or BTC/USDT", channel: "red/blue/green/none" } },
   },
   timesales: {
-    title: "Time & Sales", component: TimeSalesWidget, defaultChannel: "blue",
-    assistant: { description: "Live trade prints / time & sales (crypto)", params: { symbol: "pair e.g. BTC/USDT", channel: "red/blue/green/none" } },
+    // Follows the primary selection channel (red), like the order book, so the tape tracks your pick.
+    title: "Time & Sales", component: TimeSalesWidget, defaultChannel: "red",
+    assistant: { description: "Live trade prints / time & sales for any asset class", params: { symbol: "ticker or pair e.g. AAPL or BTC/USDT", channel: "red/blue/green/none" } },
+  },
+  options_chain: {
+    title: "Option Chain", component: OptionChainWidget, defaultChannel: "red",
+    assistant: { description: "Equity options chain: calls|strike|puts with bid/ask/IV/greeks for a selected expiry", params: { symbol: "underlying ticker e.g. AAPL", expiry: "expiration YYYY-MM-DD", channel: "red/blue/green/none" } },
+    accepts: {
+      symbols: (p) => ({ symbol: p.symbols?.[0], asset: "equity" }),
+    },
+  },
+  options_surface: {
+    title: "Options Surface", component: OptionSurfaceWidget, defaultChannel: "red",
+    assistant: { description: "Implied-volatility smile (per expiry) and expiry×strike IV surface heatmap for an equity", params: { symbol: "underlying ticker e.g. AAPL", channel: "red/blue/green/none" } },
+    accepts: {
+      symbols: (p) => ({ symbol: p.symbols?.[0], asset: "equity" }),
+    },
   },
   news: {
     title: "News", component: NewsWidget, defaultChannel: "red",
@@ -303,8 +328,8 @@ function legacyAlias(legacyType: string): FunctionComponent<WidgetProps> {
 /** Dockview's `components` prop — every widget wrapped so one crash stays one tile, plus the
  * legacy-alias components so pre-merge saved layouts still resolve. */
 export const dockviewComponents: Record<string, FunctionComponent<WidgetProps>> = {
-  ...Object.fromEntries(WIDGET_TYPES.map((t) => [t, withBoundary(t)])),
-  ...Object.fromEntries(Object.keys(LEGACY_ALIASES).map((t) => [t, legacyAlias(t)])),
+  ...Object.fromEntries(WIDGET_TYPES.map((t) => [t, withResizeGrip(withBoundary(t))])),
+  ...Object.fromEntries(Object.keys(LEGACY_ALIASES).map((t) => [t, withResizeGrip(legacyAlias(t))])),
 };
 
 /** The navigate/configure verbs the Assistant control loop may drive. Mirrors the backend

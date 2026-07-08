@@ -138,6 +138,50 @@ def _wait_for_health(url: str, timeout: float = 60.0) -> bool:
     return False
 
 
+class _WindowBridge:
+    """JS→Python bridge exposed to the SPA as ``window.pywebview.api``.
+
+    Backs the per-widget "open in new window" (⧉) control. Inside pywebview the page runs in a
+    WKWebView (macOS) / EdgeChromium (Windows) whose UI delegate blocks *script-initiated*
+    ``window.open()`` — so Dockview's built-in popout silently no-ops in the desktop app (it works
+    only in a real browser). This bridge is the desktop equivalent: the frontend hands us the target
+    widget's type + params as a ready-made ``/?solo=…`` path, and we spawn a genuine native window
+    that renders just that one widget (see frontend SoloWorkspace).
+
+    ``webview.create_window`` is safe to call from this js_api callback thread: pywebview marshals
+    child-window creation onto the GUI run loop (cocoa uses ``AppHelper.callAfter``).
+    """
+
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url.rstrip("/")
+
+    def open_panel_window(self, payload: dict | None = None) -> bool:
+        import webview  # noqa: PLC0415 - window mode only
+
+        payload = payload or {}
+        # `path` is a frontend-built "/?solo=<type>&p=<json>&t=<title>" (see lib/popout.ts). Only ever
+        # a same-origin relative path; ignore anything that isn't so a malformed value can't retarget
+        # the window off-origin.
+        path = str(payload.get("path") or "/")
+        if not path.startswith("/"):
+            path = "/"
+
+        def _clamp(value, default: int, lo: int, hi: int) -> int:
+            try:
+                return max(lo, min(hi, int(value)))
+            except (TypeError, ValueError):
+                return default
+
+        webview.create_window(
+            str(payload.get("title") or "Open Financial Terminal"),
+            f"{self._base_url}{path}",
+            width=_clamp(payload.get("width"), 900, 360, 2400),
+            height=_clamp(payload.get("height"), 640, 240, 1600),
+            min_size=(360, 240),
+        )
+        return True
+
+
 def _serve(port: int):
     """Build the uvicorn server bound to localhost:<port>. Import app lazily (post-relocate)."""
     import uvicorn
@@ -175,6 +219,7 @@ def main() -> int:
     webview.create_window(
         "Open Financial Terminal",
         url,
+        js_api=_WindowBridge(url),  # backs the per-widget "open in new window" (⧉) control
         width=1400,
         height=900,
         min_size=(1024, 700),

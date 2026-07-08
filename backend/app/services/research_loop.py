@@ -45,7 +45,7 @@ from app.services import registry as reg
 from app.services.agent_assistant import _strip_to_json
 from app.services.universe import get_universe, list_universes
 
-_MAX_ITERS = 5        # default iteration count
+_MAX_ITERS = 2        # default iteration count (kept low — each iteration is a full backtest)
 _MAX_ITERS_CEIL = 15  # hard ceiling (the committee-portfolio workflow runs up to this)
 _MODES = ("long_only", "long_short")
 _REBALS = ("monthly", "quarterly", "annual")
@@ -570,7 +570,7 @@ async def arun_research_loop(
 
     Frame types: started · analyze · phase · design · evaluate · result · iteration · reflect ·
     error · done. Every iteration is persisted as soon as it's scored (so a mid-run disconnect
-    keeps partial results). Runs all `max_iters` (≤5) iterations unless a reflection sets stop.
+    keeps partial results). Runs all `max_iters` (default 2, hard cap 15) iterations unless a reflection sets stop.
     ``guidance`` optionally biases design/reflect toward external reviewer feedback.
     """
     max_iters = max(1, min(int(max_iters or _MAX_ITERS), _MAX_ITERS_CEIL))
